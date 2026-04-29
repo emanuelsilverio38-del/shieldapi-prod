@@ -26,7 +26,7 @@ const server = http.createServer((req, res) => {
           }
           const pair = solanaPairs.reduce((a, b) => parseFloat(a.liquidity?.usd || 0) > parseFloat(b.liquidity?.usd || 0) ? a : b);
           const liq = parseFloat(pair.liquidity?.usd || 0);
-          const price = let pair.priceUsd;
+          const price = pair.priceUsd;
 
           let riskScore = 0;
           let status = 'APPROVED';
