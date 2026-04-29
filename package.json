@@ -1,9 +1,14 @@
 {
-  "name": "shield-api",
+  "name": "shieldapi-prod",
   "version": "1.0.0",
+  "description": "Shield API production",
+  "main": "server.js",
   "type": "module",
- 1️⃣  "main": "server.js",
   "scripts": {
     "start": "node server.js"
-  }
+  },
+  "engines": {
+    "node": "20.x"
+  },
+  "dependencies": {}
 }
