@@ -1,5 +1,4 @@
-
- import http from 'http';
+import http from 'http';
 import https from 'https';
 
 const PORT = process.env.PORT || 3000;
@@ -51,6 +50,32 @@ function isAuthorized(req, urlObj) {
   return keyFromQuery === API_KEY || keyFromHeader === API_KEY;
 }
 
+function getPairScore(pair) {
+  const liquidity = Number(pair?.liquidity?.usd || 0);
+  const volume24h = Number(pair?.volume?.h24 || 0);
+  const volume1h = Number(pair?.volume?.h1 || 0);
+  const buys24h = Number(pair?.txns?.h24?.buys || 0);
+  const sells24h = Number(pair?.txns?.h24?.sells || 0);
+  const totalTxns24h = buys24h + sells24h;
+
+  let score = 0;
+
+  score += Math.log10(liquidity + 1) * 25;
+  score += Math.log10(volume24h + 1) * 30;
+  score += Math.log10(volume1h + 1) * 20;
+  score += Math.min(totalTxns24h, 2000) * 0.05;
+
+  if (liquidity > 100000 && volume24h < 100 && totalTxns24h < 10) {
+    score -= 80;
+  }
+
+  if (liquidity > 1000000 && volume24h < 1000 && totalTxns24h < 20) {
+    score -= 100;
+  }
+
+  return score;
+}
+
 function getBestSolanaPair(pairs) {
   if (!Array.isArray(pairs)) {
     return null;
@@ -62,11 +87,14 @@ function getBestSolanaPair(pairs) {
     return null;
   }
 
-  return solanaPairs.reduce((best, current) => {
-    const bestLiquidity = Number(best?.liquidity?.usd || 0);
-    const currentLiquidity = Number(current?.liquidity?.usd || 0);
+  const validPairs = solanaPairs.filter((pair) => Number(pair?.liquidity?.usd || 0) > 0);
 
-    return currentLiquidity > bestLiquidity ? current : best;
+  if (validPairs.length === 0) {
+    return null;
+  }
+
+  return validPairs.reduce((best, current) => {
+    return getPairScore(current) > getPairScore(best) ? current : best;
   });
 }
 
@@ -102,12 +130,12 @@ function analyzeRisk(pair) {
     reasons.push('Liquidez nao marcada como bloqueada e inferior a $100.000.');
   }
 
-  if (volume24h < 1000) {
+  if (volume24h < 1000 && liquidity < 100000) {
     riskScore += 20;
-    reasons.push('Volume 24h muito baixo.');
+    reasons.push('Volume 24h muito baixo para a liquidez existente.');
   }
 
-  if (totalTxns24h < 20) {
+  if (totalTxns24h < 20 && liquidity < 100000) {
     riskScore += 15;
     reasons.push('Poucas transacoes nas ultimas 24h.');
   }
@@ -138,7 +166,7 @@ function analyzeRisk(pair) {
   } else if (riskScore >= 20) {
     status = 'WARNING';
     riskLevel = 'MEDIUM';
-    recommendation = 'Atenção. Pode ser analisado, mas com risco.';
+    recommendation = 'Atencao. Pode ser analisado, mas com risco.';
   } else {
     status = 'APPROVED';
     riskLevel = 'LOW';
@@ -225,7 +253,7 @@ async function handleAnalyze(req, res, urlObj) {
 
     const result = analyzeRisk(pair);
 
-    console.log('[ShieldAPI v4] ' + (token || address) + ' -> ' + result.status + ' | Risk: ' + result.riskScore);
+    console.log('[ShieldAPI v4.1] ' + (token || address) + ' -> ' + result.status + ' | Risk: ' + result.riskScore);
 
     return sendJson(res, 200, result);
   } catch (error) {
@@ -250,7 +278,7 @@ const server = http.createServer(async (req, res) => {
     return sendJson(res, 200, {
       status: 'OK',
       service: 'ShieldAPI',
-      version: '4.0',
+      version: '4.1',
       online: true,
       protected: Boolean(API_KEY)
     });
@@ -261,7 +289,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   return sendJson(res, 200, {
-    message: 'ShieldAPI v4.0 - Solana Risk Engine',
+    message: 'ShieldAPI v4.1 - Solana Risk Engine',
     routes: {
       health: '/health',
       analyzeByToken: '/analyze?token=BONK',
@@ -272,7 +300,7 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(PORT, () => {
   console.log('=================================');
-  console.log(' SHIELD API v4.0 - PRODUCTION READY ');
+  console.log(' SHIELD API v4.1 - PRODUCTION READY ');
   console.log(' PORT: ' + PORT);
   console.log(' PROTECTED: ' + Boolean(API_KEY));
   console.log('=================================');
