@@ -4,12 +4,26 @@ import https from 'https';
 const PORT = process.env.PORT || 3000;
 const API_KEY = process.env.API_KEY || '';
 
-const VERSION = '4.3';
+const VERSION = '4.4';
 const SERVICE_NAME = 'ShieldAPI';
 
 const CACHE_TTL_MS = Number(process.env.CACHE_TTL_MS || 60_000);
 const CACHE_MAX_ITEMS = Number(process.env.CACHE_MAX_ITEMS || 50_000);
 const EXTERNAL_TIMEOUT_MS = Number(process.env.EXTERNAL_TIMEOUT_MS || 3000);
+
+const RATE_LIMIT_WINDOW_MS = Number(process.env.RATE_LIMIT_WINDOW_MS || 60_000);
+const RATE_LIMIT_MAX_REQUESTS = Number(process.env.RATE_LIMIT_MAX_REQUESTS || 120);
+const RATE_LIMIT_ENABLED = String(process.env.RATE_LIMIT_ENABLED || 'true').toLowerCase() !== 'false';
+
+const rateLimitStore = new Map();
+
+const usageStats = {
+  startedAt: nowIso(),
+  totalRequests: 0,
+  blockedByRateLimit: 0,
+  byRoute: {},
+  byStatus: {}
+};
 
 const tokenCache = new Map();
 const pendingAnalysis = new Map();
@@ -25,6 +39,139 @@ function startTimer() {
 function responseTimeMs(startedAt) {
   const diffNs = process.hrtime.bigint() - startedAt;
   return Number((Number(diffNs) / 1_000_000).toFixed(2));
+}
+
+function incrementCounter(object, key, amount = 1) {
+  const safeKey = String(key || 'unknown');
+  object[safeKey] = Number(object[safeKey] || 0) + amount;
+}
+
+function recordUsage(route, statusCode, options = {}) {
+  if (options.countRequest !== false) {
+    usageStats.totalRequests += 1;
+    incrementCounter(usageStats.byRoute, route || 'unknown');
+  }
+
+  incrementCounter(usageStats.byStatus, statusCode || 'unknown');
+
+  if (options.rateLimited) {
+    usageStats.blockedByRateLimit += 1;
+  }
+}
+
+function getRouteName(pathname) {
+  if (pathname === '/health') return 'health';
+  if (pathname === '/docs') return 'docs';
+  if (pathname === '/analyze') return 'analyze';
+  if (pathname === '/analyze-fast') return 'analyze_fast';
+  if (pathname === '/submit') return 'submit';
+  if (pathname === '/cache/stats') return 'cache_stats';
+  if (pathname === '/usage') return 'usage';
+  return 'unknown';
+}
+
+function getClientIp(req) {
+  const forwarded = req.headers['x-forwarded-for'];
+
+  if (typeof forwarded === 'string' && forwarded.trim()) {
+    return forwarded.split(',')[0].trim();
+  }
+
+  return req.socket?.remoteAddress || 'unknown_ip';
+}
+
+function getRateLimitIdentity(req, urlObj) {
+  const authKey = getAuthKey(req, urlObj);
+
+  if (authKey) {
+    return `key:${authKey}`;
+  }
+
+  return `ip:${getClientIp(req)}`;
+}
+
+function shouldApplyRateLimit(route) {
+  if (!RATE_LIMIT_ENABLED) return false;
+
+  return route === 'analyze' ||
+    route === 'analyze_fast' ||
+    route === 'submit' ||
+    route === 'cache_stats' ||
+    route === 'usage';
+}
+
+function checkRateLimit(req, urlObj, route) {
+  if (!shouldApplyRateLimit(route)) {
+    return {
+      allowed: true,
+      limit: RATE_LIMIT_MAX_REQUESTS,
+      remaining: RATE_LIMIT_MAX_REQUESTS,
+      resetAtMs: Date.now() + RATE_LIMIT_WINDOW_MS,
+      retryAfterSeconds: 0
+    };
+  }
+
+  const identity = getRateLimitIdentity(req, urlObj);
+  const key = `${identity}:${route}`;
+  const now = Date.now();
+  const existing = rateLimitStore.get(key);
+
+  if (!existing || now >= existing.resetAtMs) {
+    const fresh = {
+      count: 1,
+      resetAtMs: now + RATE_LIMIT_WINDOW_MS
+    };
+
+    rateLimitStore.set(key, fresh);
+
+    return {
+      allowed: true,
+      identity,
+      route,
+      limit: RATE_LIMIT_MAX_REQUESTS,
+      remaining: Math.max(0, RATE_LIMIT_MAX_REQUESTS - fresh.count),
+      resetAtMs: fresh.resetAtMs,
+      retryAfterSeconds: 0
+    };
+  }
+
+  existing.count += 1;
+  rateLimitStore.set(key, existing);
+
+  const remaining = Math.max(0, RATE_LIMIT_MAX_REQUESTS - existing.count);
+  const retryAfterSeconds = Math.max(1, Math.ceil((existing.resetAtMs - now) / 1000));
+
+  if (existing.count > RATE_LIMIT_MAX_REQUESTS) {
+    return {
+      allowed: false,
+      identity,
+      route,
+      limit: RATE_LIMIT_MAX_REQUESTS,
+      remaining: 0,
+      resetAtMs: existing.resetAtMs,
+      retryAfterSeconds
+    };
+  }
+
+  return {
+    allowed: true,
+    identity,
+    route,
+    limit: RATE_LIMIT_MAX_REQUESTS,
+    remaining,
+    resetAtMs: existing.resetAtMs,
+    retryAfterSeconds: 0
+  };
+}
+
+function cleanupRateLimitStore() {
+  const now = Date.now();
+
+  for (const [key, value] of rateLimitStore.entries()) {
+    if (now >= value.resetAtMs + RATE_LIMIT_WINDOW_MS) {
+      rateLimitStore.delete(key);
+    }
+  }
 }
 
 function sendJson(res, statusCode, payload) {
@@ -164,14 +311,42 @@ function isAuthorized(req, urlObj) {
   return providedKey === API_KEY;
 }
 
-function requireAuthorized(req, res, urlObj, startedAt) {
+function requireAuthorized(req, res, urlObj, startedAt, route = 'unknown') {
   if (isAuthorized(req, urlObj)) {
     return true;
   }
 
+  recordUsage(route, 401, { countRequest: false });
+
   sendJson(res, 401, {
     status: 'UNAUTHORIZED',
     reason: 'API key missing or invalid',
+    responseTimeMs: responseTimeMs(startedAt)
+  });
+
+  return false;
+}
+
+function requireRateLimit(req, res, urlObj, startedAt, route) {
+  cleanupRateLimitStore();
+
+  const limit = checkRateLimit(req, urlObj, route);
+
+  if (limit.allowed) {
+    return true;
+  }
+
+  recordUsage(route, 429, { rateLimited: true, countRequest: false });
+
+  sendJson(res, 429, {
+    status: 'RATE_LIMITED',
+    reason: 'Too many requests',
+    route,
+    limit: limit.limit,
+    remaining: limit.remaining,
+    windowSeconds: Math.round(RATE_LIMIT_WINDOW_MS / 1000),
+    retryAfterSeconds: limit.retryAfterSeconds,
+    resetAt: new Date(limit.resetAtMs).toISOString(),
     responseTimeMs: responseTimeMs(startedAt)
   });
 
@@ -632,8 +807,13 @@ async function analyzeToken(input) {
 
 async function handleAnalyze(req, res, urlObj) {
   const startedAt = startTimer();
+  const route = getRouteName(urlObj.pathname);
 
-  if (!requireAuthorized(req, res, urlObj, startedAt)) {
+  if (!requireRateLimit(req, res, urlObj, startedAt, route)) {
+    return;
+  }
+
+  if (!requireAuthorized(req, res, urlObj, startedAt, route)) {
     return;
   }
 
@@ -690,8 +870,13 @@ async function handleAnalyze(req, res, urlObj) {
 
 function handleAnalyzeFast(req, res, urlObj) {
   const startedAt = startTimer();
+  const route = getRouteName(urlObj.pathname);
 
-  if (!requireAuthorized(req, res, urlObj, startedAt)) {
+  if (!requireRateLimit(req, res, urlObj, startedAt, route)) {
+    return;
+  }
+
+  if (!requireAuthorized(req, res, urlObj, startedAt, route)) {
     return;
   }
 
@@ -733,8 +918,13 @@ function handleAnalyzeFast(req, res, urlObj) {
 
 async function handleSubmit(req, res, urlObj) {
   const startedAt = startTimer();
+  const route = getRouteName(urlObj.pathname);
 
-  if (!requireAuthorized(req, res, urlObj, startedAt)) {
+  if (!requireRateLimit(req, res, urlObj, startedAt, route)) {
+    return;
+  }
+
+  if (!requireAuthorized(req, res, urlObj, startedAt, route)) {
     return;
   }
 
@@ -775,8 +965,13 @@ async function handleSubmit(req, res, urlObj) {
 
 function handleCacheStats(req, res, urlObj) {
   const startedAt = startTimer();
+  const route = getRouteName(urlObj.pathname);
 
-  if (!requireAuthorized(req, res, urlObj, startedAt)) {
+  if (!requireRateLimit(req, res, urlObj, startedAt, route)) {
+    return;
+  }
+
+  if (!requireAuthorized(req, res, urlObj, startedAt, route)) {
     return;
   }
 
@@ -788,6 +983,46 @@ function handleCacheStats(req, res, urlObj) {
     cacheMaxItems: CACHE_MAX_ITEMS,
     cacheTtlMs: CACHE_TTL_MS,
     pendingAnalysis: pendingAnalysis.size,
+    responseTimeMs: responseTimeMs(startedAt)
+  });
+}
+
+function handleUsage(req, res, urlObj) {
+  const startedAt = startTimer();
+  const route = getRouteName(urlObj.pathname);
+
+  if (!requireRateLimit(req, res, urlObj, startedAt, route)) {
+    return;
+  }
+
+  if (!requireAuthorized(req, res, urlObj, startedAt, route)) {
+    return;
+  }
+
+  recordUsage(route, 200, { countRequest: false });
+
+  return sendJson(res, 200, {
+    status: 'OK',
+    service: SERVICE_NAME,
+    version: VERSION,
+    startedAt: usageStats.startedAt,
+    uptimeSeconds: Math.round(process.uptime()),
+    totalRequests: usageStats.totalRequests,
+    blockedByRateLimit: usageStats.blockedByRateLimit,
+    byRoute: usageStats.byRoute,
+    byStatus: usageStats.byStatus,
+    rateLimit: {
+      enabled: RATE_LIMIT_ENABLED,
+      maxRequests: RATE_LIMIT_MAX_REQUESTS,
+      windowSeconds: Math.round(RATE_LIMIT_WINDOW_MS / 1000),
+      activeWindows: rateLimitStore.size
+    },
+    cache: {
+      items: tokenCache.size,
+      maxItems: CACHE_MAX_ITEMS,
+      ttlMs: CACHE_TTL_MS,
+      pendingAnalysis: pendingAnalysis.size
+    },
     responseTimeMs: responseTimeMs(startedAt)
   });
 }
@@ -850,6 +1085,11 @@ function handleDocs(res) {
         method: 'GET',
         path: '/cache/stats?key=YOUR_API_KEY',
         description: 'Returns cache statistics.'
+      },
+      usage: {
+        method: 'GET',
+        path: '/usage?key=YOUR_API_KEY',
+        description: 'Returns API usage stats, route counters and rate-limit information.'
       }
     },
     responseFields: {
@@ -875,7 +1115,8 @@ function handleDocs(res) {
       dexUrl: 'DexScreener URL',
       cacheHit: 'true if response came from cache',
       dataAgeSeconds: 'Age of cached data in seconds',
-      responseTimeMs: 'Server-side response time in milliseconds'
+      responseTimeMs: 'Server-side response time in milliseconds',
+      rateLimit: 'Rate-limit metadata on /usage or 429 responses'
     },
     exampleApprovedResponse: {
       status: 'APPROVED',
@@ -895,6 +1136,9 @@ function handleDocs(res) {
 const server = http.createServer(async (req, res) => {
   const startedAt = startTimer();
   const urlObj = new URL(req.url, 'http://localhost');
+  const route = getRouteName(urlObj.pathname);
+
+  recordUsage(route, 'received');
 
   if (req.method === 'OPTIONS') {
     return sendJson(res, 200, {
@@ -912,6 +1156,12 @@ const server = http.createServer(async (req, res) => {
       protected: Boolean(API_KEY),
       cacheItems: tokenCache.size,
       pendingAnalysis: pendingAnalysis.size,
+      rateLimit: {
+        enabled: RATE_LIMIT_ENABLED,
+        maxRequests: RATE_LIMIT_MAX_REQUESTS,
+        windowSeconds: Math.round(RATE_LIMIT_WINDOW_MS / 1000),
+        activeWindows: rateLimitStore.size
+      },
       uptimeSeconds: Math.round(process.uptime()),
       responseTimeMs: responseTimeMs(startedAt)
     });
@@ -937,6 +1187,10 @@ const server = http.createServer(async (req, res) => {
     return handleCacheStats(req, res, urlObj);
   }
 
+  if (urlObj.pathname === '/usage') {
+    return handleUsage(req, res, urlObj);
+  }
+
   return sendJson(res, 200, {
     message: `ShieldAPI v${VERSION} - Solana Risk Engine + Fast Cache Layer`,
     docs: '/docs',
@@ -946,7 +1200,8 @@ const server = http.createServer(async (req, res) => {
       analyzeByAddress: '/analyze?address=MINT_ADDRESS&key=YOUR_API_KEY',
       analyzeFast: '/analyze-fast?address=MINT_ADDRESS&key=YOUR_API_KEY',
       submit: '/submit?address=MINT_ADDRESS&key=YOUR_API_KEY',
-      cacheStats: '/cache/stats?key=YOUR_API_KEY'
+      cacheStats: '/cache/stats?key=YOUR_API_KEY',
+      usage: '/usage?key=YOUR_API_KEY'
     },
     responseTimeMs: responseTimeMs(startedAt)
   });
@@ -954,11 +1209,14 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(PORT, () => {
   console.log('=================================');
-  console.log(` SHIELD API v${VERSION} - FAST CACHE LAYER `);
+  console.log(` SHIELD API v${VERSION} - RATE LIMIT + USAGE STATS `);
   console.log(' PORT: ' + PORT);
   console.log(' PROTECTED: ' + Boolean(API_KEY));
   console.log(' CACHE TTL MS: ' + CACHE_TTL_MS);
   console.log(' CACHE MAX ITEMS: ' + CACHE_MAX_ITEMS);
   console.log(' EXTERNAL TIMEOUT MS: ' + EXTERNAL_TIMEOUT_MS);
+  console.log(' RATE LIMIT ENABLED: ' + RATE_LIMIT_ENABLED);
+  console.log(' RATE LIMIT MAX REQUESTS: ' + RATE_LIMIT_MAX_REQUESTS);
+  console.log(' RATE LIMIT WINDOW MS: ' + RATE_LIMIT_WINDOW_MS);
   console.log('=================================');
 });
