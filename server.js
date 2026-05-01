@@ -1012,7 +1012,7 @@ async function analyzeToken(input) {
 
   pendingAnalysis.set(key, task);
   try { return await task; } finally { pendingAnalysis.delete(key); }
-}\n
+}
 async function handleAnalyze(req, res, urlObj) {
   const startedAt = startTimer();
   const route = getRouteName(urlObj.pathname);
