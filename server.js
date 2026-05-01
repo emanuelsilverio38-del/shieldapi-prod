@@ -1,11 +1,12 @@
 import http from 'http';
 import https from 'https';
+import crypto from 'crypto';
 import { Pool } from 'pg';
 
 const PORT = process.env.PORT || 3000;
 const API_KEY = process.env.API_KEY || '';
 
-const VERSION = '4.5';
+const VERSION = '4.6';
 const SERVICE_NAME = 'ShieldAPI';
 
 const CACHE_TTL_MS = Number(process.env.CACHE_TTL_MS || 60_000);
@@ -13,11 +14,49 @@ const CACHE_MAX_ITEMS = Number(process.env.CACHE_MAX_ITEMS || 50_000);
 const EXTERNAL_TIMEOUT_MS = Number(process.env.EXTERNAL_TIMEOUT_MS || 3000);
 
 const RATE_LIMIT_WINDOW_MS = Number(process.env.RATE_LIMIT_WINDOW_MS || 60_000);
-const RATE_LIMIT_MAX_REQUESTS = Number(process.env.RATE_LIMIT_MAX_REQUESTS || 120);
 const RATE_LIMIT_ENABLED = String(process.env.RATE_LIMIT_ENABLED || 'true').toLowerCase() !== 'false';
 
 const DATABASE_URL = process.env.DATABASE_URL || '';
 const DATABASE_ENABLED = Boolean(DATABASE_URL);
+
+const PLAN_CONFIG = {
+  free: {
+    name: 'Free',
+    perMinute: 30,
+    quota: 100,
+    quotaPeriod: 'day'
+  },
+  starter: {
+    name: 'Starter',
+    perMinute: 120,
+    quota: 10_000,
+    quotaPeriod: 'month'
+  },
+  pro: {
+    name: 'Pro',
+    perMinute: 600,
+    quota: 100_000,
+    quotaPeriod: 'month'
+  },
+  advanced: {
+    name: 'Advanced',
+    perMinute: 1500,
+    quota: 500_000,
+    quotaPeriod: 'month'
+  },
+  enterprise: {
+    name: 'Enterprise',
+    perMinute: Number(process.env.ENTERPRISE_RATE_LIMIT_PER_MINUTE || 5000),
+    quota: null,
+    quotaPeriod: 'month'
+  },
+  master: {
+    name: 'Master Admin',
+    perMinute: Number(process.env.MASTER_RATE_LIMIT_PER_MINUTE || 5000),
+    quota: null,
+    quotaPeriod: 'month'
+  }
+};
 
 const tokenCache = new Map();
 const pendingAnalysis = new Map();
@@ -41,8 +80,11 @@ const usageStats = {
   startedAt: nowIso(),
   totalRequests: 0,
   blockedByRateLimit: 0,
+  blockedByQuota: 0,
+  unauthorized: 0,
   byRoute: {},
-  byStatus: {}
+  byStatus: {},
+  byPlan: {}
 };
 
 function nowIso() {
@@ -71,9 +113,10 @@ function recordUsage(route, statusCode, options = {}) {
 
   incrementCounter(usageStats.byStatus, statusCode || 'unknown');
 
-  if (options.rateLimited) {
-    usageStats.blockedByRateLimit += 1;
-  }
+  if (options.rateLimited) usageStats.blockedByRateLimit += 1;
+  if (options.quotaLimited) usageStats.blockedByQuota += 1;
+  if (options.unauthorized) usageStats.unauthorized += 1;
+  if (options.plan) incrementCounter(usageStats.byPlan, options.plan);
 }
 
 function sendJson(res, statusCode, payload) {
@@ -85,6 +128,24 @@ function sendJson(res, statusCode, payload) {
   });
 
   res.end(JSON.stringify(payload, null, 2));
+}
+
+function sendApiJson(res, statusCode, payload, context = {}) {
+  const plan = context.auth?.plan || null;
+  recordUsage(context.route || 'unknown', statusCode, {
+    countRequest: false,
+    plan,
+    rateLimited: statusCode === 429 && payload?.status === 'RATE_LIMITED',
+    quotaLimited: statusCode === 429 && payload?.status === 'QUOTA_LIMITED',
+    unauthorized: statusCode === 401
+  });
+
+  if (context.auth && context.route) {
+    recordClientUsageEvent(context.auth, context.route, statusCode, payload?.responseTimeMs, payload)
+      .catch((error) => console.log('[USAGE] Failed to record usage event:', error.message));
+  }
+
+  return sendJson(res, statusCode, payload);
 }
 
 function normalizeAddress(value) {
@@ -111,6 +172,10 @@ function getRouteName(pathname) {
   if (pathname === '/submit') return 'submit';
   if (pathname === '/cache/stats') return 'cache_stats';
   if (pathname === '/usage') return 'usage';
+  if (pathname === '/admin/clients/create') return 'admin_clients_create';
+  if (pathname === '/admin/clients') return 'admin_clients_list';
+  if (pathname === '/admin/clients/disable') return 'admin_clients_disable';
+  if (pathname === '/admin/clients/usage') return 'admin_clients_usage';
   return 'unknown';
 }
 
@@ -128,88 +193,45 @@ function getAuthKey(req, urlObj) {
   return keyFromQuery || keyFromHeader || bearer || '';
 }
 
-function isAuthorized(req, urlObj) {
-  const providedKey = getAuthKey(req, urlObj);
-  if (!API_KEY) return true;
-  return providedKey === API_KEY;
+function hashApiKey(apiKey) {
+  return crypto.createHash('sha256').update(String(apiKey)).digest('hex');
 }
 
-function requireAuthorized(req, res, urlObj, startedAt, route = 'unknown') {
-  if (isAuthorized(req, urlObj)) return true;
-
-  recordUsage(route, 401, { countRequest: false });
-  sendJson(res, 401, {
-    status: 'UNAUTHORIZED',
-    reason: 'API key missing or invalid',
-    responseTimeMs: responseTimeMs(startedAt)
-  });
-  return false;
+function generateClientApiKey() {
+  return `shield_live_${crypto.randomBytes(24).toString('hex')}`;
 }
 
-function getRateLimitIdentity(req, urlObj) {
-  const authKey = getAuthKey(req, urlObj);
-  if (authKey) return `key:${authKey}`;
-  return `ip:${getClientIp(req)}`;
+function normalizePlan(plan) {
+  const normalized = String(plan || 'free').toLowerCase().trim();
+  return PLAN_CONFIG[normalized] ? normalized : 'free';
 }
 
-function shouldApplyRateLimit(route) {
-  if (!RATE_LIMIT_ENABLED) return false;
-  return route === 'analyze' || route === 'analyze_fast' || route === 'submit' || route === 'cache_stats' || route === 'usage';
+function getPlanConfig(plan) {
+  return PLAN_CONFIG[normalizePlan(plan)] || PLAN_CONFIG.free;
 }
 
-function cleanupRateLimitStore() {
-  const now = Date.now();
-  for (const [key, value] of rateLimitStore.entries()) {
-    if (now >= value.resetAtMs + RATE_LIMIT_WINDOW_MS) rateLimitStore.delete(key);
-  }
-}
+function getPeriodStart(period) {
+  const now = new Date();
 
-function checkRateLimit(req, urlObj, route) {
-  if (!shouldApplyRateLimit(route)) {
-    return { allowed: true, limit: RATE_LIMIT_MAX_REQUESTS, remaining: RATE_LIMIT_MAX_REQUESTS, resetAtMs: Date.now() + RATE_LIMIT_WINDOW_MS, retryAfterSeconds: 0 };
+  if (period === 'day') {
+    return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 0, 0, 0));
   }
 
-  const identity = getRateLimitIdentity(req, urlObj);
-  const key = `${identity}:${route}`;
-  const now = Date.now();
-  const existing = rateLimitStore.get(key);
-
-  if (!existing || now >= existing.resetAtMs) {
-    const fresh = { count: 1, resetAtMs: now + RATE_LIMIT_WINDOW_MS };
-    rateLimitStore.set(key, fresh);
-    return { allowed: true, identity, route, limit: RATE_LIMIT_MAX_REQUESTS, remaining: Math.max(0, RATE_LIMIT_MAX_REQUESTS - fresh.count), resetAtMs: fresh.resetAtMs, retryAfterSeconds: 0 };
-  }
-
-  existing.count += 1;
-  rateLimitStore.set(key, existing);
-
-  const retryAfterSeconds = Math.max(1, Math.ceil((existing.resetAtMs - now) / 1000));
-
-  if (existing.count > RATE_LIMIT_MAX_REQUESTS) {
-    return { allowed: false, identity, route, limit: RATE_LIMIT_MAX_REQUESTS, remaining: 0, resetAtMs: existing.resetAtMs, retryAfterSeconds };
-  }
-
-  return { allowed: true, identity, route, limit: RATE_LIMIT_MAX_REQUESTS, remaining: Math.max(0, RATE_LIMIT_MAX_REQUESTS - existing.count), resetAtMs: existing.resetAtMs, retryAfterSeconds: 0 };
+  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1, 0, 0, 0));
 }
 
-function requireRateLimit(req, res, urlObj, startedAt, route) {
-  cleanupRateLimitStore();
-  const limit = checkRateLimit(req, urlObj, route);
-  if (limit.allowed) return true;
+function getPublicClient(client) {
+  if (!client) return null;
 
-  recordUsage(route, 429, { rateLimited: true, countRequest: false });
-  sendJson(res, 429, {
-    status: 'RATE_LIMITED',
-    reason: 'Too many requests',
-    route,
-    limit: limit.limit,
-    remaining: limit.remaining,
-    windowSeconds: Math.round(RATE_LIMIT_WINDOW_MS / 1000),
-    retryAfterSeconds: limit.retryAfterSeconds,
-    resetAt: new Date(limit.resetAtMs).toISOString(),
-    responseTimeMs: responseTimeMs(startedAt)
-  });
-  return false;
+  return {
+    id: client.id,
+    name: client.name,
+    plan: client.plan,
+    status: client.status,
+    createdAt: client.created_at || client.createdAt || null,
+    lastUsedAt: client.last_used_at || client.lastUsedAt || null,
+    disabledAt: client.disabled_at || client.disabledAt || null
+  };
 }
 
 async function initDatabase() {
@@ -245,15 +267,315 @@ async function initDatabase() {
       ON token_analysis_cache(status)
     `);
 
+    await dbPool.query(`
+      CREATE TABLE IF NOT EXISTS api_clients (
+        id UUID PRIMARY KEY,
+        name TEXT NOT NULL,
+        plan TEXT NOT NULL DEFAULT 'free',
+        api_key_hash TEXT UNIQUE NOT NULL,
+        status TEXT NOT NULL DEFAULT 'active',
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW(),
+        last_used_at TIMESTAMPTZ,
+        disabled_at TIMESTAMPTZ
+      )
+    `);
+
+    await dbPool.query(`
+      CREATE INDEX IF NOT EXISTS idx_api_clients_status
+      ON api_clients(status)
+    `);
+
+    await dbPool.query(`
+      CREATE INDEX IF NOT EXISTS idx_api_clients_plan
+      ON api_clients(plan)
+    `);
+
+    await dbPool.query(`
+      CREATE TABLE IF NOT EXISTS api_usage_events (
+        id BIGSERIAL PRIMARY KEY,
+        client_id UUID,
+        client_name TEXT,
+        plan TEXT,
+        route TEXT NOT NULL,
+        status_code INTEGER,
+        response_time_ms NUMERIC,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        metadata JSONB
+      )
+    `);
+
+    await dbPool.query(`
+      CREATE INDEX IF NOT EXISTS idx_api_usage_client_created
+      ON api_usage_events(client_id, created_at DESC)
+    `);
+
+    await dbPool.query(`
+      CREATE INDEX IF NOT EXISTS idx_api_usage_route_created
+      ON api_usage_events(route, created_at DESC)
+    `);
+
     dbReady = true;
     dbLastError = null;
-    console.log('[DB] PostgreSQL cache ready.');
+    console.log('[DB] PostgreSQL cache + API clients ready.');
     return true;
   } catch (error) {
     dbReady = false;
     dbLastError = error.message;
     console.log('[DB] PostgreSQL init failed:', error.message);
     return false;
+  }
+}
+
+async function findClientByApiKey(apiKey) {
+  if (!dbPool || !dbReady || !apiKey) return null;
+
+  const apiKeyHash = hashApiKey(apiKey);
+
+  try {
+    const result = await dbPool.query(
+      `
+      SELECT id, name, plan, status, created_at, updated_at, last_used_at, disabled_at
+      FROM api_clients
+      WHERE api_key_hash = $1
+      LIMIT 1
+      `,
+      [apiKeyHash]
+    );
+
+    if (result.rows.length === 0) return null;
+    return result.rows[0];
+  } catch (error) {
+    dbLastError = error.message;
+    console.log('[CLIENTS] Failed to find client:', error.message);
+    return null;
+  }
+}
+
+async function authenticateRequest(req, urlObj, options = {}) {
+  const providedKey = getAuthKey(req, urlObj);
+  const master = Boolean(API_KEY && providedKey === API_KEY);
+
+  if (master) {
+    return {
+      ok: true,
+      type: 'master',
+      master: true,
+      client: null,
+      clientId: null,
+      clientName: 'MASTER',
+      plan: 'master',
+      planConfig: PLAN_CONFIG.master,
+      identity: 'master'
+    };
+  }
+
+  if (options.adminOnly) {
+    return { ok: false, statusCode: 401, reason: 'Admin API key required' };
+  }
+
+  const client = await findClientByApiKey(providedKey);
+
+  if (!client) {
+    return { ok: false, statusCode: 401, reason: 'API key missing or invalid' };
+  }
+
+  if (client.status !== 'active') {
+    return { ok: false, statusCode: 403, reason: 'API key is disabled' };
+  }
+
+  const plan = normalizePlan(client.plan);
+
+  return {
+    ok: true,
+    type: 'client',
+    master: false,
+    client,
+    clientId: client.id,
+    clientName: client.name,
+    plan,
+    planConfig: getPlanConfig(plan),
+    identity: `client:${client.id}`
+  };
+}
+
+async function requireAuth(req, res, urlObj, startedAt, route, options = {}) {
+  const auth = await authenticateRequest(req, urlObj, options);
+
+  if (auth.ok) return auth;
+
+  recordUsage(route, auth.statusCode || 401, { countRequest: false, unauthorized: true });
+
+  sendJson(res, auth.statusCode || 401, {
+    status: auth.statusCode === 403 ? 'FORBIDDEN' : 'UNAUTHORIZED',
+    reason: auth.reason || 'API key missing or invalid',
+    responseTimeMs: responseTimeMs(startedAt)
+  });
+
+  return null;
+}
+
+function shouldApplyRateLimit(route) {
+  if (!RATE_LIMIT_ENABLED) return false;
+
+  return route === 'analyze' ||
+    route === 'analyze_fast' ||
+    route === 'submit' ||
+    route === 'cache_stats' ||
+    route === 'usage' ||
+    route.startsWith('admin_');
+}
+
+function cleanupRateLimitStore() {
+  const now = Date.now();
+  for (const [key, value] of rateLimitStore.entries()) {
+    if (now >= value.resetAtMs + RATE_LIMIT_WINDOW_MS) rateLimitStore.delete(key);
+  }
+}
+
+function checkRateLimit(auth, route) {
+  const planConfig = auth?.planConfig || PLAN_CONFIG.free;
+  const limitMax = Number(planConfig.perMinute || 30);
+
+  if (!shouldApplyRateLimit(route)) {
+    return { allowed: true, limit: limitMax, remaining: limitMax, resetAtMs: Date.now() + RATE_LIMIT_WINDOW_MS, retryAfterSeconds: 0 };
+  }
+
+  const identity = auth?.identity || 'anonymous';
+  const key = `${identity}:${route}`;
+  const now = Date.now();
+  const existing = rateLimitStore.get(key);
+
+  if (!existing || now >= existing.resetAtMs) {
+    const fresh = { count: 1, resetAtMs: now + RATE_LIMIT_WINDOW_MS };
+    rateLimitStore.set(key, fresh);
+    return { allowed: true, identity, route, limit: limitMax, remaining: Math.max(0, limitMax - fresh.count), resetAtMs: fresh.resetAtMs, retryAfterSeconds: 0 };
+  }
+
+  existing.count += 1;
+  rateLimitStore.set(key, existing);
+
+  const retryAfterSeconds = Math.max(1, Math.ceil((existing.resetAtMs - now) / 1000));
+
+  if (existing.count > limitMax) {
+    return { allowed: false, identity, route, limit: limitMax, remaining: 0, resetAtMs: existing.resetAtMs, retryAfterSeconds };
+  }
+
+  return { allowed: true, identity, route, limit: limitMax, remaining: Math.max(0, limitMax - existing.count), resetAtMs: existing.resetAtMs, retryAfterSeconds: 0 };
+}
+
+function requireRateLimit(req, res, urlObj, startedAt, route, auth) {
+  cleanupRateLimitStore();
+  const limit = checkRateLimit(auth, route);
+
+  if (limit.allowed) return true;
+
+  recordUsage(route, 429, { rateLimited: true, countRequest: false, plan: auth?.plan });
+
+  sendJson(res, 429, {
+    status: 'RATE_LIMITED',
+    reason: 'Too many requests',
+    route,
+    plan: auth?.plan || 'unknown',
+    limit: limit.limit,
+    remaining: limit.remaining,
+    windowSeconds: Math.round(RATE_LIMIT_WINDOW_MS / 1000),
+    retryAfterSeconds: limit.retryAfterSeconds,
+    resetAt: new Date(limit.resetAtMs).toISOString(),
+    responseTimeMs: responseTimeMs(startedAt)
+  });
+
+  return false;
+}
+
+async function getClientUsageCount(auth) {
+  if (!dbPool || !dbReady || auth.master || !auth.clientId) return { count: 0, limit: null, period: 'none', allowed: true };
+
+  const planConfig = auth.planConfig || getPlanConfig(auth.plan);
+  if (!planConfig.quota) return { count: 0, limit: null, period: planConfig.quotaPeriod, allowed: true };
+
+  const periodStart = getPeriodStart(planConfig.quotaPeriod);
+
+  try {
+    const result = await dbPool.query(
+      `
+      SELECT COUNT(*)::INT AS count
+      FROM api_usage_events
+      WHERE client_id = $1
+        AND created_at >= $2
+        AND status_code BETWEEN 200 AND 499
+      `,
+      [auth.clientId, periodStart]
+    );
+
+    const count = Number(result.rows[0]?.count || 0);
+    return { count, limit: planConfig.quota, period: planConfig.quotaPeriod, allowed: count < planConfig.quota, periodStart };
+  } catch (error) {
+    dbLastError = error.message;
+    return { count: 0, limit: planConfig.quota, period: planConfig.quotaPeriod, allowed: true, error: error.message };
+  }
+}
+
+async function requireQuota(req, res, startedAt, route, auth) {
+  const quota = await getClientUsageCount(auth);
+
+  if (quota.allowed) return true;
+
+  recordUsage(route, 429, { quotaLimited: true, countRequest: false, plan: auth?.plan });
+
+  sendJson(res, 429, {
+    status: 'QUOTA_LIMITED',
+    reason: `Plan quota exceeded for current ${quota.period}`,
+    route,
+    plan: auth.plan,
+    used: quota.count,
+    limit: quota.limit,
+    period: quota.period,
+    responseTimeMs: responseTimeMs(startedAt)
+  });
+
+  return false;
+}
+
+async function recordClientUsageEvent(auth, route, statusCode, responseMs, payload) {
+  if (!dbPool || !dbReady || !auth || auth.master) return;
+
+  try {
+    await dbPool.query(
+      `
+      INSERT INTO api_usage_events (
+        client_id,
+        client_name,
+        plan,
+        route,
+        status_code,
+        response_time_ms,
+        metadata
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7)
+      `,
+      [
+        auth.clientId,
+        auth.clientName,
+        auth.plan,
+        route,
+        Number(statusCode),
+        Number(responseMs || 0),
+        JSON.stringify({
+          status: payload?.status || null,
+          mode: payload?.mode || null,
+          cacheHit: payload?.cacheHit ?? null,
+          dbHit: payload?.dbHit ?? null
+        })
+      ]
+    );
+
+    await dbPool.query(
+      `UPDATE api_clients SET last_used_at = NOW(), updated_at = NOW() WHERE id = $1`,
+      [auth.clientId]
+    );
+  } catch (error) {
+    dbLastError = error.message;
+    console.log('[USAGE] Failed to record client usage:', error.message);
   }
 }
 
@@ -432,10 +754,7 @@ function getJson(url) {
       });
     });
 
-    request.on('timeout', () => {
-      request.destroy(new Error(`External API timeout after ${EXTERNAL_TIMEOUT_MS}ms`));
-    });
-
+    request.on('timeout', () => request.destroy(new Error(`External API timeout after ${EXTERNAL_TIMEOUT_MS}ms`)));
     request.on('error', reject);
   });
 }
@@ -693,14 +1012,14 @@ async function analyzeToken(input) {
 
   pendingAnalysis.set(key, task);
   try { return await task; } finally { pendingAnalysis.delete(key); }
-}
-
+}\n
 async function handleAnalyze(req, res, urlObj) {
   const startedAt = startTimer();
   const route = getRouteName(urlObj.pathname);
-
-  if (!requireRateLimit(req, res, urlObj, startedAt, route)) return;
-  if (!requireAuthorized(req, res, urlObj, startedAt, route)) return;
+  const auth = await requireAuth(req, res, urlObj, startedAt, route);
+  if (!auth) return;
+  if (!requireRateLimit(req, res, urlObj, startedAt, route, auth)) return;
+  if (!(await requireQuota(req, res, startedAt, route, auth))) return;
 
   const token = normalizeAddress(urlObj.searchParams.get('token'));
   const address = normalizeAddress(urlObj.searchParams.get('address'));
@@ -708,75 +1027,72 @@ async function handleAnalyze(req, res, urlObj) {
   const input = address || token;
 
   if (!input) {
-    return sendJson(res, 400, { status: 'ERROR', reason: 'Use /analyze?token=BONK or /analyze?address=MINT_ADDRESS', responseTimeMs: responseTimeMs(startedAt) });
+    return sendApiJson(res, 400, { status: 'ERROR', reason: 'Use /analyze?token=BONK or /analyze?address=MINT_ADDRESS', responseTimeMs: responseTimeMs(startedAt) }, { route, auth });
   }
 
   try {
     const cached = getCachedAnalysis(input);
     if (cached && cached.isFresh && !refresh) {
-      return sendJson(res, 200, { ...cached.data, mode: 'cache', cacheHit: true, dbHit: false, dataAgeSeconds: Math.round(cached.ageMs / 1000), responseTimeMs: responseTimeMs(startedAt) });
+      return sendApiJson(res, 200, { ...cached.data, mode: 'cache', cacheHit: true, dbHit: false, dataAgeSeconds: Math.round(cached.ageMs / 1000), responseTimeMs: responseTimeMs(startedAt) }, { route, auth });
     }
 
     const dbCached = !refresh ? await getAnalysisFromDb(input) : null;
     if (dbCached && dbCached.ageMs <= CACHE_TTL_MS) {
-      return sendJson(res, 200, { ...dbCached.data, mode: 'db-cache', cacheHit: true, dbHit: true, dataAgeSeconds: Math.round(dbCached.ageMs / 1000), responseTimeMs: responseTimeMs(startedAt) });
+      return sendApiJson(res, 200, { ...dbCached.data, mode: 'db-cache', cacheHit: true, dbHit: true, dataAgeSeconds: Math.round(dbCached.ageMs / 1000), responseTimeMs: responseTimeMs(startedAt) }, { route, auth });
     }
 
     const result = await analyzeToken(input);
     console.log(`[ShieldAPI v${VERSION}] ${input} -> ${result.data.status} | Risk: ${result.data.riskScore} | Opp: ${result.data.opportunityScore}`);
 
-    return sendJson(res, result.httpStatus, { ...result.data, mode: 'deep', cacheHit: false, dbHit: false, dataAgeSeconds: 0, responseTimeMs: responseTimeMs(startedAt) });
+    return sendApiJson(res, result.httpStatus, { ...result.data, mode: 'deep', cacheHit: false, dbHit: false, dataAgeSeconds: 0, responseTimeMs: responseTimeMs(startedAt) }, { route, auth });
   } catch (error) {
-    return sendJson(res, 500, { status: 'ERROR', reason: 'Internal error while analyzing token.', error: error.message, mode: 'deep', cacheHit: false, dbHit: false, responseTimeMs: responseTimeMs(startedAt) });
+    return sendApiJson(res, 500, { status: 'ERROR', reason: 'Internal error while analyzing token.', error: error.message, mode: 'deep', cacheHit: false, dbHit: false, responseTimeMs: responseTimeMs(startedAt) }, { route, auth });
   }
 }
 
 async function handleAnalyzeFast(req, res, urlObj) {
   const startedAt = startTimer();
   const route = getRouteName(urlObj.pathname);
-
-  if (!requireRateLimit(req, res, urlObj, startedAt, route)) return;
-  if (!requireAuthorized(req, res, urlObj, startedAt, route)) return;
+  const auth = await requireAuth(req, res, urlObj, startedAt, route);
+  if (!auth) return;
+  if (!requireRateLimit(req, res, urlObj, startedAt, route, auth)) return;
+  if (!(await requireQuota(req, res, startedAt, route, auth))) return;
 
   const token = normalizeAddress(urlObj.searchParams.get('token'));
   const address = normalizeAddress(urlObj.searchParams.get('address'));
   const input = address || token;
 
   if (!input) {
-    return sendJson(res, 400, { status: 'ERROR', reason: 'Use /analyze-fast?token=BONK or /analyze-fast?address=MINT_ADDRESS', responseTimeMs: responseTimeMs(startedAt) });
+    return sendApiJson(res, 400, { status: 'ERROR', reason: 'Use /analyze-fast?token=BONK or /analyze-fast?address=MINT_ADDRESS', responseTimeMs: responseTimeMs(startedAt) }, { route, auth });
   }
 
   const cached = getCachedAnalysis(input);
   if (cached) {
-    return sendJson(res, 200, { ...cached.data, ...buildCacheMeta(cached, 'fast', startedAt) });
+    return sendApiJson(res, 200, { ...cached.data, ...buildCacheMeta(cached, 'fast', startedAt) }, { route, auth });
   }
 
   const dbCached = await getAnalysisFromDb(input);
   if (dbCached) {
-    return sendJson(res, 200, { ...dbCached.data, mode: 'fast-db', cacheHit: true, dbHit: true, dataAgeSeconds: Math.round(dbCached.ageMs / 1000), responseTimeMs: responseTimeMs(startedAt) });
+    return sendApiJson(res, 200, { ...dbCached.data, mode: 'fast-db', cacheHit: true, dbHit: true, dataAgeSeconds: Math.round(dbCached.ageMs / 1000), responseTimeMs: responseTimeMs(startedAt) }, { route, auth });
   }
 
-  return sendJson(res, 404, {
-    service: SERVICE_NAME,
-    version: VERSION,
-    status: 'UNKNOWN',
-    riskLevel: 'UNKNOWN',
-    riskScore: null,
-    opportunityScore: 0,
+  return sendApiJson(res, 404, {
+    service: SERVICE_NAME, version: VERSION, status: 'UNKNOWN', riskLevel: 'UNKNOWN', riskScore: null, opportunityScore: 0,
     reason: 'Token not in cache or database yet. Call /analyze or /submit first.',
     tokenAddress: address || null,
     tokenSymbol: token || (address ? shortAddress(address) : null),
     mode: 'fast', cacheHit: false, dbHit: false, dataAgeSeconds: null,
     responseTimeMs: responseTimeMs(startedAt)
-  });
+  }, { route, auth });
 }
 
 async function handleSubmit(req, res, urlObj) {
   const startedAt = startTimer();
   const route = getRouteName(urlObj.pathname);
-
-  if (!requireRateLimit(req, res, urlObj, startedAt, route)) return;
-  if (!requireAuthorized(req, res, urlObj, startedAt, route)) return;
+  const auth = await requireAuth(req, res, urlObj, startedAt, route);
+  if (!auth) return;
+  if (!requireRateLimit(req, res, urlObj, startedAt, route, auth)) return;
+  if (!(await requireQuota(req, res, startedAt, route, auth))) return;
 
   try {
     const body = req.method === 'POST' ? await readRequestBody(req) : {};
@@ -785,25 +1101,25 @@ async function handleSubmit(req, res, urlObj) {
     const input = address || token;
 
     if (!input) {
-      return sendJson(res, 400, { status: 'ERROR', reason: 'Use /submit?token=BONK or /submit?address=MINT_ADDRESS', responseTimeMs: responseTimeMs(startedAt) });
+      return sendApiJson(res, 400, { status: 'ERROR', reason: 'Use /submit?token=BONK or /submit?address=MINT_ADDRESS', responseTimeMs: responseTimeMs(startedAt) }, { route, auth });
     }
 
     analyzeToken(input).catch((error) => console.error(`[SUBMIT] Background analysis failed for ${input}:`, error.message));
 
-    return sendJson(res, 200, { service: SERVICE_NAME, version: VERSION, status: 'QUEUED', reason: 'Token submitted for background analysis.', tokenAddress: address || null, tokenSymbol: token || (address ? shortAddress(address) : null), mode: 'submit', responseTimeMs: responseTimeMs(startedAt) });
+    return sendApiJson(res, 200, { service: SERVICE_NAME, version: VERSION, status: 'QUEUED', reason: 'Token submitted for background analysis.', tokenAddress: address || null, tokenSymbol: token || (address ? shortAddress(address) : null), mode: 'submit', responseTimeMs: responseTimeMs(startedAt) }, { route, auth });
   } catch (error) {
-    return sendJson(res, 400, { status: 'ERROR', reason: error.message, responseTimeMs: responseTimeMs(startedAt) });
+    return sendApiJson(res, 400, { status: 'ERROR', reason: error.message, responseTimeMs: responseTimeMs(startedAt) }, { route, auth });
   }
 }
 
-function handleCacheStats(req, res, urlObj) {
+async function handleCacheStats(req, res, urlObj) {
   const startedAt = startTimer();
   const route = getRouteName(urlObj.pathname);
+  const auth = await requireAuth(req, res, urlObj, startedAt, route);
+  if (!auth) return;
+  if (!requireRateLimit(req, res, urlObj, startedAt, route, auth)) return;
 
-  if (!requireRateLimit(req, res, urlObj, startedAt, route)) return;
-  if (!requireAuthorized(req, res, urlObj, startedAt, route)) return;
-
-  return sendJson(res, 200, {
+  return sendApiJson(res, 200, {
     service: SERVICE_NAME,
     version: VERSION,
     cacheItems: tokenCache.size,
@@ -812,31 +1128,150 @@ function handleCacheStats(req, res, urlObj) {
     pendingAnalysis: pendingAnalysis.size,
     database: { enabled: DATABASE_ENABLED, ready: dbReady, lastError: dbLastError },
     responseTimeMs: responseTimeMs(startedAt)
-  });
+  }, { route, auth });
 }
 
-function handleUsage(req, res, urlObj) {
+async function handleUsage(req, res, urlObj) {
   const startedAt = startTimer();
   const route = getRouteName(urlObj.pathname);
+  const auth = await requireAuth(req, res, urlObj, startedAt, route);
+  if (!auth) return;
+  if (!requireRateLimit(req, res, urlObj, startedAt, route, auth)) return;
 
-  if (!requireRateLimit(req, res, urlObj, startedAt, route)) return;
-  if (!requireAuthorized(req, res, urlObj, startedAt, route)) return;
+  const quota = await getClientUsageCount(auth);
 
-  recordUsage(route, 200, { countRequest: false });
-
-  return sendJson(res, 200, {
+  return sendApiJson(res, 200, {
     status: 'OK', service: SERVICE_NAME, version: VERSION,
+    client: auth.master ? { type: 'master', plan: 'master' } : { id: auth.clientId, name: auth.clientName, plan: auth.plan },
+    quota: auth.master ? null : { used: quota.count, limit: quota.limit, period: quota.period, remaining: quota.limit === null ? null : Math.max(0, quota.limit - quota.count) },
     startedAt: usageStats.startedAt,
     uptimeSeconds: Math.round(process.uptime()),
     totalRequests: usageStats.totalRequests,
     blockedByRateLimit: usageStats.blockedByRateLimit,
+    blockedByQuota: usageStats.blockedByQuota,
+    unauthorized: usageStats.unauthorized,
     byRoute: usageStats.byRoute,
     byStatus: usageStats.byStatus,
-    rateLimit: { enabled: RATE_LIMIT_ENABLED, maxRequests: RATE_LIMIT_MAX_REQUESTS, windowSeconds: Math.round(RATE_LIMIT_WINDOW_MS / 1000), activeWindows: rateLimitStore.size },
+    byPlan: usageStats.byPlan,
+    rateLimit: { enabled: RATE_LIMIT_ENABLED, planLimitPerMinute: auth.planConfig.perMinute, windowSeconds: Math.round(RATE_LIMIT_WINDOW_MS / 1000), activeWindows: rateLimitStore.size },
     cache: { items: tokenCache.size, maxItems: CACHE_MAX_ITEMS, ttlMs: CACHE_TTL_MS, pendingAnalysis: pendingAnalysis.size },
     database: { enabled: DATABASE_ENABLED, ready: dbReady, lastError: dbLastError },
     responseTimeMs: responseTimeMs(startedAt)
-  });
+  }, { route, auth });
+}
+
+async function handleAdminCreateClient(req, res, urlObj) {
+  const startedAt = startTimer();
+  const route = getRouteName(urlObj.pathname);
+  const auth = await requireAuth(req, res, urlObj, startedAt, route, { adminOnly: true });
+  if (!auth) return;
+  if (!dbPool || !dbReady) return sendApiJson(res, 503, { status: 'ERROR', reason: 'Database is not ready', responseTimeMs: responseTimeMs(startedAt) }, { route, auth });
+
+  try {
+    const body = req.method === 'POST' ? await readRequestBody(req) : {};
+    const name = String(body.name || urlObj.searchParams.get('name') || '').trim();
+    const plan = normalizePlan(body.plan || urlObj.searchParams.get('plan') || 'free');
+
+    if (!name) return sendApiJson(res, 400, { status: 'ERROR', reason: 'Client name is required', responseTimeMs: responseTimeMs(startedAt) }, { route, auth });
+
+    const clientId = crypto.randomUUID();
+    const apiKey = generateClientApiKey();
+    const apiKeyHash = hashApiKey(apiKey);
+
+    await dbPool.query(
+      `INSERT INTO api_clients (id, name, plan, api_key_hash, status) VALUES ($1,$2,$3,$4,'active')`,
+      [clientId, name, plan, apiKeyHash]
+    );
+
+    return sendApiJson(res, 201, {
+      status: 'OK',
+      message: 'Client created. Save this API key now; it will not be shown again.',
+      client: { id: clientId, name, plan, status: 'active', planConfig: getPlanConfig(plan) },
+      apiKey,
+      responseTimeMs: responseTimeMs(startedAt)
+    }, { route, auth });
+  } catch (error) {
+    return sendApiJson(res, 500, { status: 'ERROR', reason: error.message, responseTimeMs: responseTimeMs(startedAt) }, { route, auth });
+  }
+}
+
+async function handleAdminListClients(req, res, urlObj) {
+  const startedAt = startTimer();
+  const route = getRouteName(urlObj.pathname);
+  const auth = await requireAuth(req, res, urlObj, startedAt, route, { adminOnly: true });
+  if (!auth) return;
+  if (!dbPool || !dbReady) return sendApiJson(res, 503, { status: 'ERROR', reason: 'Database is not ready', responseTimeMs: responseTimeMs(startedAt) }, { route, auth });
+
+  try {
+    const result = await dbPool.query(
+      `SELECT id, name, plan, status, created_at, updated_at, last_used_at, disabled_at FROM api_clients ORDER BY created_at DESC LIMIT 200`
+    );
+
+    return sendApiJson(res, 200, { status: 'OK', clients: result.rows.map(getPublicClient), responseTimeMs: responseTimeMs(startedAt) }, { route, auth });
+  } catch (error) {
+    return sendApiJson(res, 500, { status: 'ERROR', reason: error.message, responseTimeMs: responseTimeMs(startedAt) }, { route, auth });
+  }
+}
+
+async function handleAdminDisableClient(req, res, urlObj) {
+  const startedAt = startTimer();
+  const route = getRouteName(urlObj.pathname);
+  const auth = await requireAuth(req, res, urlObj, startedAt, route, { adminOnly: true });
+  if (!auth) return;
+  if (!dbPool || !dbReady) return sendApiJson(res, 503, { status: 'ERROR', reason: 'Database is not ready', responseTimeMs: responseTimeMs(startedAt) }, { route, auth });
+
+  try {
+    const body = req.method === 'POST' ? await readRequestBody(req) : {};
+    const clientId = String(body.clientId || urlObj.searchParams.get('clientId') || '').trim();
+
+    if (!clientId) return sendApiJson(res, 400, { status: 'ERROR', reason: 'clientId is required', responseTimeMs: responseTimeMs(startedAt) }, { route, auth });
+
+    const result = await dbPool.query(
+      `UPDATE api_clients SET status='disabled', disabled_at=NOW(), updated_at=NOW() WHERE id=$1 RETURNING id, name, plan, status, created_at, updated_at, last_used_at, disabled_at`,
+      [clientId]
+    );
+
+    if (result.rows.length === 0) return sendApiJson(res, 404, { status: 'ERROR', reason: 'Client not found', responseTimeMs: responseTimeMs(startedAt) }, { route, auth });
+
+    return sendApiJson(res, 200, { status: 'OK', client: getPublicClient(result.rows[0]), responseTimeMs: responseTimeMs(startedAt) }, { route, auth });
+  } catch (error) {
+    return sendApiJson(res, 500, { status: 'ERROR', reason: error.message, responseTimeMs: responseTimeMs(startedAt) }, { route, auth });
+  }
+}
+
+async function handleAdminClientUsage(req, res, urlObj) {
+  const startedAt = startTimer();
+  const route = getRouteName(urlObj.pathname);
+  const auth = await requireAuth(req, res, urlObj, startedAt, route, { adminOnly: true });
+  if (!auth) return;
+  if (!dbPool || !dbReady) return sendApiJson(res, 503, { status: 'ERROR', reason: 'Database is not ready', responseTimeMs: responseTimeMs(startedAt) }, { route, auth });
+
+  try {
+    const clientId = String(urlObj.searchParams.get('clientId') || '').trim();
+    const params = [];
+    let where = `created_at >= NOW() - INTERVAL '30 days'`;
+
+    if (clientId) {
+      params.push(clientId);
+      where += ` AND client_id = $1`;
+    }
+
+    const result = await dbPool.query(
+      `
+      SELECT client_id, client_name, plan, route, COUNT(*)::INT AS requests, AVG(response_time_ms)::NUMERIC(10,2) AS avg_response_ms
+      FROM api_usage_events
+      WHERE ${where}
+      GROUP BY client_id, client_name, plan, route
+      ORDER BY requests DESC
+      LIMIT 200
+      `,
+      params
+    );
+
+    return sendApiJson(res, 200, { status: 'OK', window: '30d', rows: result.rows, responseTimeMs: responseTimeMs(startedAt) }, { route, auth });
+  } catch (error) {
+    return sendApiJson(res, 500, { status: 'ERROR', reason: error.message, responseTimeMs: responseTimeMs(startedAt) }, { route, auth });
+  }
 }
 
 function handleDocs(res) {
@@ -847,6 +1282,11 @@ function handleDocs(res) {
     status: 'online',
     protected: Boolean(API_KEY),
     database: { enabled: DATABASE_ENABLED, ready: dbReady },
+    plans: PLAN_CONFIG,
+    authentication: {
+      clientMethods: ['Query parameter: ?key=CLIENT_API_KEY', 'HTTP header: x-api-key: CLIENT_API_KEY', 'HTTP header: Authorization: Bearer CLIENT_API_KEY'],
+      adminMethods: ['Use MASTER API_KEY for /admin endpoints']
+    },
     routes: {
       health: '/health',
       docs: '/docs',
@@ -855,13 +1295,11 @@ function handleDocs(res) {
       analyzeFast: '/analyze-fast?address=MINT_ADDRESS&key=YOUR_API_KEY',
       submit: '/submit?address=MINT_ADDRESS&key=YOUR_API_KEY',
       cacheStats: '/cache/stats?key=YOUR_API_KEY',
-      usage: '/usage?key=YOUR_API_KEY'
-    },
-    performanceTargets: {
-      health: '<20ms typical',
-      analyzeFastMemoryHit: '<100ms target',
-      analyzeFastDatabaseHit: 'usually fast, depends on database latency',
-      analyzeDeep: 'depends on DexScreener latency'
+      usage: '/usage?key=YOUR_API_KEY',
+      adminCreateClient: 'POST /admin/clients/create?key=MASTER_API_KEY',
+      adminListClients: 'GET /admin/clients?key=MASTER_API_KEY',
+      adminDisableClient: 'POST /admin/clients/disable?key=MASTER_API_KEY',
+      adminClientUsage: 'GET /admin/clients/usage?key=MASTER_API_KEY'
     },
     disclaimer: 'ShieldAPI is a risk analysis tool. It does not execute trades, hold user funds, custody private keys or provide financial advice.'
   });
@@ -882,8 +1320,9 @@ const server = http.createServer(async (req, res) => {
     return sendJson(res, 200, {
       status: 'OK', service: SERVICE_NAME, version: VERSION, online: true, protected: Boolean(API_KEY),
       cacheItems: tokenCache.size, pendingAnalysis: pendingAnalysis.size,
-      rateLimit: { enabled: RATE_LIMIT_ENABLED, maxRequests: RATE_LIMIT_MAX_REQUESTS, windowSeconds: Math.round(RATE_LIMIT_WINDOW_MS / 1000), activeWindows: rateLimitStore.size },
+      rateLimit: { enabled: RATE_LIMIT_ENABLED, windowSeconds: Math.round(RATE_LIMIT_WINDOW_MS / 1000), activeWindows: rateLimitStore.size },
       database: { enabled: DATABASE_ENABLED, ready: dbReady, lastError: dbLastError },
+      plans: Object.fromEntries(Object.entries(PLAN_CONFIG).map(([key, value]) => [key, { perMinute: value.perMinute, quota: value.quota, quotaPeriod: value.quotaPeriod }])),
       uptimeSeconds: Math.round(process.uptime()), responseTimeMs: responseTimeMs(startedAt)
     });
   }
@@ -894,19 +1333,14 @@ const server = http.createServer(async (req, res) => {
   if (urlObj.pathname === '/submit') return handleSubmit(req, res, urlObj);
   if (urlObj.pathname === '/cache/stats') return handleCacheStats(req, res, urlObj);
   if (urlObj.pathname === '/usage') return handleUsage(req, res, urlObj);
+  if (urlObj.pathname === '/admin/clients/create') return handleAdminCreateClient(req, res, urlObj);
+  if (urlObj.pathname === '/admin/clients') return handleAdminListClients(req, res, urlObj);
+  if (urlObj.pathname === '/admin/clients/disable') return handleAdminDisableClient(req, res, urlObj);
+  if (urlObj.pathname === '/admin/clients/usage') return handleAdminClientUsage(req, res, urlObj);
 
   return sendJson(res, 200, {
-    message: `ShieldAPI v${VERSION} - Solana Risk Engine + Persistent Cache`,
-    docs: '/docs', health: '/health',
-    routes: {
-      analyzeByToken: '/analyze?token=BONK&key=YOUR_API_KEY',
-      analyzeByAddress: '/analyze?address=MINT_ADDRESS&key=YOUR_API_KEY',
-      analyzeFast: '/analyze-fast?address=MINT_ADDRESS&key=YOUR_API_KEY',
-      submit: '/submit?address=MINT_ADDRESS&key=YOUR_API_KEY',
-      cacheStats: '/cache/stats?key=YOUR_API_KEY',
-      usage: '/usage?key=YOUR_API_KEY'
-    },
-    responseTimeMs: responseTimeMs(startedAt)
+    message: `ShieldAPI v${VERSION} - Client API Keys + Plans`,
+    docs: '/docs', health: '/health', responseTimeMs: responseTimeMs(startedAt)
   });
 });
 
@@ -915,17 +1349,13 @@ async function startServer() {
 
   server.listen(PORT, () => {
     console.log('=================================');
-    console.log(` SHIELD API v${VERSION} - PERSISTENT CACHE + POSTGRES `);
+    console.log(` SHIELD API v${VERSION} - CLIENT API KEYS + PLANS `);
     console.log(' PORT: ' + PORT);
     console.log(' PROTECTED: ' + Boolean(API_KEY));
     console.log(' CACHE TTL MS: ' + CACHE_TTL_MS);
-    console.log(' CACHE MAX ITEMS: ' + CACHE_MAX_ITEMS);
-    console.log(' EXTERNAL TIMEOUT MS: ' + EXTERNAL_TIMEOUT_MS);
-    console.log(' RATE LIMIT ENABLED: ' + RATE_LIMIT_ENABLED);
-    console.log(' RATE LIMIT MAX REQUESTS: ' + RATE_LIMIT_MAX_REQUESTS);
-    console.log(' RATE LIMIT WINDOW MS: ' + RATE_LIMIT_WINDOW_MS);
     console.log(' DATABASE ENABLED: ' + DATABASE_ENABLED);
     console.log(' DATABASE READY: ' + dbReady);
+    console.log(' PLANS: ' + Object.keys(PLAN_CONFIG).join(', '));
     console.log('=================================');
   });
 }
