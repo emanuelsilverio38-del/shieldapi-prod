@@ -12,7 +12,7 @@ function sendJson(res, statusCode, payload) {
     'Access-Control-Allow-Methods': 'GET, OPTIONS'
   });
 
-  res.end(JSON.stringify(payload));
+  res.end(JSON.stringify(payload, null, 2));
 }
 
 function getJson(url) {
@@ -29,7 +29,7 @@ function getJson(url) {
           try {
             resolve(JSON.parse(data));
           } catch (error) {
-            reject(new Error('Resposta invalida da API externa'));
+            reject(new Error('Invalid response from external API'));
           }
         });
       })
@@ -111,70 +111,70 @@ function analyzeRisk(pair) {
   let riskScore = 0;
   let status = 'APPROVED';
   let riskLevel = 'LOW';
-  let recommendation = 'Pode ser analisado. Nao e uma recomendacao de compra.';
+  let recommendation = 'Token can be analyzed. This is not financial advice.';
   const reasons = [];
 
   if (liquidity < 5000) {
     riskScore += 80;
-    reasons.push('Liquidez critica inferior a $5.000.');
+    reasons.push('Critical liquidity below $5,000.');
   } else if (liquidity < 20000) {
     riskScore += 40;
-    reasons.push('Liquidez baixa inferior a $20.000.');
+    reasons.push('Low liquidity below $20,000.');
   } else if (liquidity < 100000) {
     riskScore += 20;
-    reasons.push('Liquidez moderada inferior a $100.000.');
+    reasons.push('Moderate liquidity below $100,000.');
   }
 
   if (!pair?.liquidity?.locked && liquidity < 100000) {
     riskScore += 20;
-    reasons.push('Liquidez nao marcada como bloqueada e inferior a $100.000.');
+    reasons.push('Liquidity is not marked as locked and is below $100,000.');
   }
 
   if (volume24h < 1000 && liquidity < 100000) {
     riskScore += 20;
-    reasons.push('Volume 24h muito baixo para a liquidez existente.');
+    reasons.push('Very low 24h volume relative to liquidity.');
   }
 
   if (totalTxns24h < 20 && liquidity < 100000) {
     riskScore += 15;
-    reasons.push('Poucas transacoes nas ultimas 24h.');
+    reasons.push('Very low number of transactions in the last 24h.');
   }
 
   if (priceChange24h <= -40) {
     riskScore += 25;
-    reasons.push('Queda forte nas ultimas 24h.');
+    reasons.push('Strong price drop in the last 24h.');
   }
 
   if (priceChange1h <= -25) {
     riskScore += 20;
-    reasons.push('Queda forte na ultima hora.');
+    reasons.push('Strong price drop in the last hour.');
   }
 
   if (priceChange5m <= -15) {
     riskScore += 15;
-    reasons.push('Queda forte nos ultimos 5 minutos.');
+    reasons.push('Strong price drop in the last 5 minutes.');
   }
 
   if (riskScore >= 70) {
     status = 'BLOCKED';
     riskLevel = 'CRITICAL';
-    recommendation = 'Bloquear. Risco muito elevado.';
+    recommendation = 'Block this token. Risk is very high.';
   } else if (riskScore >= 40) {
     status = 'BLOCKED';
     riskLevel = 'HIGH';
-    recommendation = 'Bloquear ou analisar manualmente. Risco elevado.';
+    recommendation = 'Block or manually review this token. Risk is high.';
   } else if (riskScore >= 20) {
     status = 'WARNING';
     riskLevel = 'MEDIUM';
-    recommendation = 'Atencao. Pode ser analisado, mas com risco.';
+    recommendation = 'Proceed with caution. The token can be analyzed, but risk exists.';
   } else {
     status = 'APPROVED';
     riskLevel = 'LOW';
-    recommendation = 'Pode ser analisado. Risco baixo.';
+    recommendation = 'Token can be analyzed. Risk appears low.';
   }
 
   if (reasons.length === 0) {
-    reasons.push('Sem sinais graves detetados na Solana.');
+    reasons.push('No major risk signals detected on Solana.');
   }
 
   return {
@@ -220,7 +220,7 @@ async function handleAnalyze(req, res, urlObj) {
   if (!token && !address) {
     return sendJson(res, 400, {
       status: 'ERROR',
-      reason: 'Usa /analyze?token=BONK ou /analyze?address=MINT_ADDRESS'
+      reason: 'Use /analyze?token=BONK or /analyze?address=MINT_ADDRESS'
     });
   }
 
@@ -238,7 +238,7 @@ async function handleAnalyze(req, res, urlObj) {
     if (!parsed.pairs || parsed.pairs.length === 0) {
       return sendJson(res, 404, {
         status: 'ERROR',
-        reason: 'Token nao encontrado.'
+        reason: 'Token not found.'
       });
     }
 
@@ -247,22 +247,91 @@ async function handleAnalyze(req, res, urlObj) {
     if (!pair) {
       return sendJson(res, 403, {
         status: 'BLOCKED',
-        reason: 'Token nao existe na rede Solana.'
+        reason: 'Token does not exist on Solana.'
       });
     }
 
     const result = analyzeRisk(pair);
 
-    console.log('[ShieldAPI v4.1] ' + (token || address) + ' -> ' + result.status + ' | Risk: ' + result.riskScore);
+    console.log('[ShieldAPI v4.2] ' + (token || address) + ' -> ' + result.status + ' | Risk: ' + result.riskScore);
 
     return sendJson(res, 200, result);
   } catch (error) {
     return sendJson(res, 500, {
       status: 'ERROR',
-      reason: 'Erro interno ao analisar token.',
+      reason: 'Internal error while analyzing token.',
       error: error.message
     });
   }
+}
+
+function handleDocs(res) {
+  return sendJson(res, 200, {
+    name: 'ShieldAPI',
+    version: '4.2',
+    description: 'Solana token risk analysis API for AI agents, trading bots and Web3 applications.',
+    status: 'online',
+    protected: Boolean(API_KEY),
+    baseUrl: 'https://zucchini-caring-production.up.railway.app',
+    authentication: {
+      required: Boolean(API_KEY),
+      methods: [
+        'Query parameter: ?key=YOUR_API_KEY',
+        'HTTP header: x-api-key: YOUR_API_KEY'
+      ],
+      example: '/analyze?token=BONK&key=YOUR_API_KEY'
+    },
+    routes: {
+      health: {
+        method: 'GET',
+        path: '/health',
+        description: 'Returns service status and version.'
+      },
+      docs: {
+        method: 'GET',
+        path: '/docs',
+        description: 'Returns API documentation.'
+      },
+      analyzeByToken: {
+        method: 'GET',
+        path: '/analyze?token=BONK&key=YOUR_API_KEY',
+        description: 'Searches a token by symbol/name and analyzes the best active Solana pair.'
+      },
+      analyzeByAddress: {
+        method: 'GET',
+        path: '/analyze?address=MINT_ADDRESS&key=YOUR_API_KEY',
+        description: 'Analyzes a Solana token by mint address.'
+      }
+    },
+    responseFields: {
+      status: 'APPROVED, WARNING, BLOCKED, ERROR or UNAUTHORIZED',
+      riskScore: 'Numeric risk score from 0 upward',
+      riskLevel: 'LOW, MEDIUM, HIGH or CRITICAL',
+      recommendation: 'Human-readable action suggestion',
+      reasons: 'Array of detected risk reasons',
+      price: 'Current token price in USD',
+      liquidity: 'Pair liquidity in USD',
+      volume24h: '24h trading volume in USD',
+      txns24h: '24h buy/sell transaction count',
+      priceChange: 'Price changes for 5m, 1h and 24h',
+      chain: 'Always solana',
+      dex: 'DEX identifier',
+      pairAddress: 'DEX pair address',
+      tokenAddress: 'Token mint address',
+      tokenName: 'Token name',
+      tokenSymbol: 'Token symbol',
+      dexUrl: 'DexScreener URL'
+    },
+    exampleApprovedResponse: {
+      status: 'APPROVED',
+      riskScore: 0,
+      riskLevel: 'LOW',
+      recommendation: 'Token can be analyzed. Risk appears low.',
+      reasons: ['No major risk signals detected on Solana.'],
+      chain: 'solana'
+    },
+    disclaimer: 'ShieldAPI is a risk analysis tool. It does not execute trades, hold user funds, custody private keys or provide financial advice.'
+  });
 }
 
 const server = http.createServer(async (req, res) => {
@@ -278,10 +347,14 @@ const server = http.createServer(async (req, res) => {
     return sendJson(res, 200, {
       status: 'OK',
       service: 'ShieldAPI',
-      version: '4.1',
+      version: '4.2',
       online: true,
       protected: Boolean(API_KEY)
     });
+  }
+
+  if (urlObj.pathname === '/docs') {
+    return handleDocs(res);
   }
 
   if (urlObj.pathname === '/analyze') {
@@ -289,18 +362,19 @@ const server = http.createServer(async (req, res) => {
   }
 
   return sendJson(res, 200, {
-    message: 'ShieldAPI v4.1 - Solana Risk Engine',
+    message: 'ShieldAPI v4.2 - Solana Risk Engine',
+    docs: '/docs',
+    health: '/health',
     routes: {
-      health: '/health',
-      analyzeByToken: '/analyze?token=BONK',
-      analyzeByAddress: '/analyze?address=MINT_ADDRESS'
+      analyzeByToken: '/analyze?token=BONK&key=YOUR_API_KEY',
+      analyzeByAddress: '/analyze?address=MINT_ADDRESS&key=YOUR_API_KEY'
     }
   });
 });
 
 server.listen(PORT, () => {
   console.log('=================================');
-  console.log(' SHIELD API v4.1 - PRODUCTION READY ');
+  console.log(' SHIELD API v4.2 - PRODUCTION READY ');
   console.log(' PORT: ' + PORT);
   console.log(' PROTECTED: ' + Boolean(API_KEY));
   console.log('=================================');
