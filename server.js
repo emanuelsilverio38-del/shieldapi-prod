@@ -20,8 +20,17 @@ const RATE_LIMIT_ENABLED = String(process.env.RATE_LIMIT_ENABLED || 'true').toLo
 const DATABASE_URL = process.env.DATABASE_URL || '';
 const DATABASE_ENABLED = Boolean(DATABASE_URL);
 
-const STRIPE_SECRET_KEY = process.env.STRIPE_SECRET_KEY || '';
-const STRIPE_WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET || '';
+function cleanEnvValue(value) {
+  return String(value || '')
+    .trim()
+    .replace(/^['"]+|['"]+$/g, '')
+    .replace(/\\n/g, '')
+    .replace(/\r?\n/g, '')
+    .trim();
+}
+
+const STRIPE_SECRET_KEY = cleanEnvValue(process.env.STRIPE_SECRET_KEY);
+const STRIPE_WEBHOOK_SECRET = cleanEnvValue(process.env.STRIPE_WEBHOOK_SECRET);
 const STRIPE_ENABLED = Boolean(STRIPE_SECRET_KEY);
 const stripe = STRIPE_ENABLED ? new Stripe(STRIPE_SECRET_KEY) : null;
 
@@ -29,9 +38,9 @@ const APP_URL = process.env.APP_URL || 'https://zucchini-caring-production.up.ra
 const DASHBOARD_SUCCESS_URL = process.env.DASHBOARD_SUCCESS_URL || `${APP_URL}/billing/success`;
 const DASHBOARD_CANCEL_URL = process.env.DASHBOARD_CANCEL_URL || `${APP_URL}/billing/cancel`;
 
-const STRIPE_PRICE_STARTER = process.env.STRIPE_PRICE_STARTER || '';
-const STRIPE_PRICE_PRO = process.env.STRIPE_PRICE_PRO || '';
-const STRIPE_PRICE_ADVANCED = process.env.STRIPE_PRICE_ADVANCED || '';
+const STRIPE_PRICE_STARTER = cleanEnvValue(process.env.STRIPE_PRICE_STARTER);
+const STRIPE_PRICE_PRO = cleanEnvValue(process.env.STRIPE_PRICE_PRO);
+const STRIPE_PRICE_ADVANCED = cleanEnvValue(process.env.STRIPE_PRICE_ADVANCED);
 
 const PLAN_CONFIG = {
   free: { name: 'Free', perMinute: 30, quota: 100, quotaPeriod: 'day' },
