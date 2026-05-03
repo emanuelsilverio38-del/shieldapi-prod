@@ -3,6 +3,7 @@ import https from 'https';
 import crypto from 'crypto';
 import Stripe from 'stripe';
 import { Pool } from 'pg';
+import { handleRoute, getKnownRoutes } from './src/routes/index.js';
 
 const PORT = process.env.PORT || 3000;
 const API_KEY = process.env.API_KEY || '';
@@ -1460,6 +1461,7 @@ async function startServer() {
     console.log(' DATABASE READY: ' + dbReady);
     console.log(' STRIPE ENABLED: ' + STRIPE_ENABLED);
     console.log(' STRIPE WEBHOOK CONFIGURED: ' + Boolean(STRIPE_WEBHOOK_SECRET));
+    console.log(' MODULAR ROUTES READY: ' + getKnownRoutes().length);
     console.log('=================================');
   });
 }
