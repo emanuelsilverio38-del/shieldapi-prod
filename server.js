@@ -1416,25 +1416,30 @@ const server = http.createServer(async (req, res) => {
 
   recordUsage(route, 'received');
 
+  const routeContext = {
+    pool: dbPool,
+    dbPool,
+    dbReady,
+    stripe,
+    version: VERSION,
+    startedAt,
+    responseTimeMs
+  };
+
   if (req.method === 'OPTIONS') return sendJson(res, 200, { status: 'OK', responseTimeMs: responseTimeMs(startedAt) });
 
   if (urlObj.pathname === '/') {
-    const handled = await handleRoute(req, res, {
-      pool: dbPool,
-      version: VERSION,
-      startedAt,
-      responseTimeMs
-    });
+    const handled = await handleRoute(req, res, routeContext);
     if (handled !== false) return;
   }
 
   if (urlObj.pathname === '/health') {
-    const handled = await handleRoute(req, res, { pool: dbPool });
+    const handled = await handleRoute(req, res, routeContext);
     if (handled !== false) return;
   }
 
   if (urlObj.pathname === '/docs') {
-    const handled = await handleRoute(req, res, { pool: dbPool });
+    const handled = await handleRoute(req, res, routeContext);
     if (handled !== false) return;
   }
 
@@ -1442,17 +1447,19 @@ const server = http.createServer(async (req, res) => {
   if (urlObj.pathname === '/billing/portal') return handleBillingPortal(req, res, urlObj);
   if (urlObj.pathname === '/billing/success') return handleBillingSuccess(req, res, urlObj);
   if (urlObj.pathname === '/billing/cancel') {
-    const handled = await handleRoute(req, res, { pool: dbPool });
+    const handled = await handleRoute(req, res, routeContext);
     if (handled !== false) return;
   }
+
   if (urlObj.pathname === '/webhooks/stripe') return handleStripeWebhook(req, res);
   if (urlObj.pathname === '/analyze') return handleAnalyze(req, res, urlObj);
   if (urlObj.pathname === '/analyze-fast') return handleAnalyzeFast(req, res, urlObj);
   if (urlObj.pathname === '/submit') return handleSubmit(req, res, urlObj);
   if (urlObj.pathname === '/cache/stats') {
-    const handled = await handleRoute(req, res, { pool: dbPool });
+    const handled = await handleRoute(req, res, routeContext);
     if (handled !== false) return;
   }
+
   if (urlObj.pathname === '/usage') return handleUsage(req, res, urlObj);
   if (urlObj.pathname === '/admin/clients/create') return handleAdminCreateClient(req, res, urlObj);
   if (urlObj.pathname === '/admin/clients') return handleAdminListClients(req, res, urlObj);
