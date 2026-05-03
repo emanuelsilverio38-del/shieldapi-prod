@@ -1419,17 +1419,9 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'OPTIONS') return sendJson(res, 200, { status: 'OK', responseTimeMs: responseTimeMs(startedAt) });
 
   if (urlObj.pathname === '/health') {
-    return sendJson(res, 200, {
-      status: 'OK', service: SERVICE_NAME, version: VERSION, online: true, protected: Boolean(API_KEY),
-      cacheItems: tokenCache.size, pendingAnalysis: pendingAnalysis.size,
-      rateLimit: { enabled: RATE_LIMIT_ENABLED, windowSeconds: Math.round(RATE_LIMIT_WINDOW_MS / 1000), activeWindows: rateLimitStore.size },
-      database: { enabled: DATABASE_ENABLED, ready: dbReady, lastError: dbLastError },
-      stripe: { enabled: STRIPE_ENABLED, webhookConfigured: Boolean(STRIPE_WEBHOOK_SECRET), prices: { starter: Boolean(STRIPE_PRICE_STARTER), pro: Boolean(STRIPE_PRICE_PRO), advanced: Boolean(STRIPE_PRICE_ADVANCED) } },
-      plans: Object.fromEntries(Object.entries(PLAN_CONFIG).map(([key, value]) => [key, { perMinute: value.perMinute, quota: value.quota, quotaPeriod: value.quotaPeriod, stripeConfigured: Boolean(value.stripePriceId) }])),
-      uptimeSeconds: Math.round(process.uptime()), responseTimeMs: responseTimeMs(startedAt)
-    });
+    const handled = await handleRoute(req, res, { pool: dbPool });
+    if (handled !== false) return;
   }
-
   if (urlObj.pathname === '/docs') return handleDocs(res);
   if (urlObj.pathname === '/billing/create-checkout-session') return handleBillingCreateCheckoutSession(req, res, urlObj);
   if (urlObj.pathname === '/billing/portal') return handleBillingPortal(req, res, urlObj);
