@@ -1,4 +1,6 @@
 import { handleHealth } from './health.js';
+import { handleDocs } from './docs.js';
+
 import {
   handleCreateCheckoutSession,
   handleBillingPortal,
@@ -26,6 +28,10 @@ export async function handleRoute(req, res, context = {}) {
 
   if (req.method === 'GET' && pathname === '/health') {
     return handleHealth(req, res, context);
+  }
+
+  if (req.method === 'GET' && pathname === '/docs') {
+    return handleDocs(req, res, context);
   }
 
   if (req.method === 'POST' && pathname === '/billing/create-checkout-session') {
@@ -90,6 +96,7 @@ export async function handleRoute(req, res, context = {}) {
 export function getKnownRoutes() {
   return [
     'GET /health',
+    'GET /docs',
     'GET /analyze',
     'GET /analyze-fast',
     'POST /submit',

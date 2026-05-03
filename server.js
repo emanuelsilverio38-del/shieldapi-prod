@@ -1422,7 +1422,12 @@ const server = http.createServer(async (req, res) => {
     const handled = await handleRoute(req, res, { pool: dbPool });
     if (handled !== false) return;
   }
-  if (urlObj.pathname === '/docs') return handleDocs(res);
+
+  if (urlObj.pathname === '/docs') {
+    const handled = await handleRoute(req, res, { pool: dbPool });
+    if (handled !== false) return;
+  }
+
   if (urlObj.pathname === '/billing/create-checkout-session') return handleBillingCreateCheckoutSession(req, res, urlObj);
   if (urlObj.pathname === '/billing/portal') return handleBillingPortal(req, res, urlObj);
   if (urlObj.pathname === '/billing/success') return handleBillingSuccess(req, res, urlObj);
