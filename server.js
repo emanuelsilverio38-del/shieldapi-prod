@@ -1418,6 +1418,16 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === 'OPTIONS') return sendJson(res, 200, { status: 'OK', responseTimeMs: responseTimeMs(startedAt) });
 
+  if (urlObj.pathname === '/') {
+    const handled = await handleRoute(req, res, {
+      pool: dbPool,
+      version: VERSION,
+      startedAt,
+      responseTimeMs
+    });
+    if (handled !== false) return;
+  }
+
   if (urlObj.pathname === '/health') {
     const handled = await handleRoute(req, res, { pool: dbPool });
     if (handled !== false) return;
@@ -1449,7 +1459,13 @@ const server = http.createServer(async (req, res) => {
   if (urlObj.pathname === '/admin/clients/disable') return handleAdminDisableClient(req, res, urlObj);
   if (urlObj.pathname === '/admin/clients/usage') return handleAdminClientUsage(req, res, urlObj);
 
-  return sendJson(res, 200, { message: `ShieldAPI v${VERSION} - Stripe Billing Automation`, docs: '/docs', health: '/health', responseTimeMs: responseTimeMs(startedAt) });
+  return sendJson(res, 404, {
+    status: 'NOT_FOUND',
+    message: 'Route not found',
+    docs: '/docs',
+    health: '/health',
+    responseTimeMs: responseTimeMs(startedAt)
+  });
 });
 
 async function startServer() {

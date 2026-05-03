@@ -1,3 +1,4 @@
+import { handleRoot } from './root.js';
 import { handleHealth } from './health.js';
 import { handleDocs } from './docs.js';
 
@@ -25,6 +26,10 @@ import {
 export async function handleRoute(req, res, context = {}) {
   const url = new URL(req.url, 'http://localhost');
   const pathname = url.pathname;
+
+  if (req.method === 'GET' && pathname === '/') {
+    return handleRoot(req, res, context);
+  }
 
   if (req.method === 'GET' && pathname === '/health') {
     return handleHealth(req, res, context);
@@ -95,6 +100,7 @@ export async function handleRoute(req, res, context = {}) {
 
 export function getKnownRoutes() {
   return [
+    'GET /',
     'GET /health',
     'GET /docs',
     'GET /analyze',
