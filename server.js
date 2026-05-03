@@ -1426,7 +1426,10 @@ const server = http.createServer(async (req, res) => {
   if (urlObj.pathname === '/billing/create-checkout-session') return handleBillingCreateCheckoutSession(req, res, urlObj);
   if (urlObj.pathname === '/billing/portal') return handleBillingPortal(req, res, urlObj);
   if (urlObj.pathname === '/billing/success') return handleBillingSuccess(req, res, urlObj);
-  if (urlObj.pathname === '/billing/cancel') return handleBillingCancel(res);
+  if (urlObj.pathname === '/billing/cancel') {
+    const handled = await handleRoute(req, res, { pool: dbPool });
+    if (handled !== false) return;
+  }
   if (urlObj.pathname === '/webhooks/stripe') return handleStripeWebhook(req, res);
   if (urlObj.pathname === '/analyze') return handleAnalyze(req, res, urlObj);
   if (urlObj.pathname === '/analyze-fast') return handleAnalyzeFast(req, res, urlObj);
