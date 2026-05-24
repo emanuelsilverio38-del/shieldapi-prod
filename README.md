@@ -32,7 +32,10 @@ ShieldAPI is not financial advice and should not be marketed as a profit bot. It
 npm install
 npm start
 npm test
+npm run verify
 ```
+
+See [deployment.md](docs/deployment.md) before pushing to production.
 
 ## Important
 

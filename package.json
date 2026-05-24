@@ -5,7 +5,9 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "test": "node --test"
+    "test": "node --test",
+    "check": "node --check server.js",
+    "verify": "npm run check && npm test"
   },
   "dependencies": {
     "pg": "^8.20.0",
