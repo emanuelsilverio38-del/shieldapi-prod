@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ShieldAPI Client Dashboard</title>
+    <link rel="stylesheet" href="../shared/styles.css" />
+  </head>
+  <body>
+    <header>
+      <h1>ShieldAPI Client</h1>
+      <div class="toolbar">
+        <input id="apiBase" aria-label="API base URL" />
+        <button id="saveBase">Save</button>
+      </div>
+    </header>
+    <main>
+      <div class="grid">
+        <section class="panel span-12">
+          <h2>Access</h2>
+          <div class="form-grid">
+            <input id="apiKey" aria-label="API key" placeholder="API key" />
+            <div class="toolbar">
+              <button id="saveKey" class="primary">Save Key</button>
+              <button id="loadUsage">Refresh Usage</button>
+              <button id="openPortal">Billing Portal</button>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel span-3 metric">
+          <span class="muted">Plan</span>
+          <strong id="plan">-</strong>
+        </section>
+        <section class="panel span-3 metric">
+          <span class="muted">Used</span>
+          <strong id="used">-</strong>
+        </section>
+        <section class="panel span-3 metric">
+          <span class="muted">Remaining</span>
+          <strong id="remaining">-</strong>
+        </section>
+        <section class="panel span-3 metric">
+          <span class="muted">Status</span>
+          <strong id="clientStatus">-</strong>
+        </section>
+
+        <section class="panel span-5">
+          <h2>Analyze</h2>
+          <div class="form-grid">
+            <input id="tokenInput" aria-label="Token" placeholder="Token symbol or mint address" />
+            <button id="runAnalyze" class="primary">Analyze</button>
+          </div>
+        </section>
+        <section class="panel span-7">
+          <h2>Decision</h2>
+          <pre id="analyzeOutput">{}</pre>
+        </section>
+
+        <section class="panel span-12">
+          <h2>Usage By Route</h2>
+          <table>
+            <thead>
+              <tr>
+                <th>Route</th>
+                <th>Requests</th>
+                <th>Cache Hits</th>
+                <th>DB Hits</th>
+                <th>Avg ms</th>
+              </tr>
+            </thead>
+            <tbody id="usageRows"></tbody>
+          </table>
+        </section>
+      </div>
+    </main>
+    <script type="module">
+      import { getApiBase, setApiBase, getApiKey, setApiKey, shieldFetch } from '../shared/api.js';
+
+      const apiBase = document.querySelector('#apiBase');
+      const apiKey = document.querySelector('#apiKey');
+      const output = document.querySelector('#analyzeOutput');
+      const rows = document.querySelector('#usageRows');
+
+      apiBase.value = getApiBase();
+      apiKey.value = getApiKey();
+
+      document.querySelector('#saveBase').addEventListener('click', () => {
+        setApiBase(apiBase.value);
+      });
+
+      document.querySelector('#saveKey').addEventListener('click', () => {
+        setApiKey(apiKey.value);
+      });
+
+      document.querySelector('#loadUsage').addEventListener('click', loadUsage);
+
+      document.querySelector('#openPortal').addEventListener('click', async () => {
+        const result = await shieldFetch('/billing/portal', { method: 'POST', apiKey: apiKey.value });
+        if (result.ok && result.data.portalUrl) window.location.href = result.data.portalUrl;
+        else output.textContent = JSON.stringify(result.data, null, 2);
+      });
+
+      document.querySelector('#runAnalyze').addEventListener('click', async () => {
+        const token = document.querySelector('#tokenInput').value.trim();
+        const key = token.length >= 32 ? 'address' : 'token';
+        const result = await shieldFetch(`/analyze?${key}=${encodeURIComponent(token)}`, { apiKey: apiKey.value });
+        output.textContent = JSON.stringify(result.data, null, 2);
+      });
+
+      async function loadUsage() {
+        const result = await shieldFetch('/usage', { apiKey: apiKey.value });
+        if (!result.ok) {
+          output.textContent = JSON.stringify(result.data, null, 2);
+          return;
+        }
+
+        const data = result.data;
+        document.querySelector('#plan').textContent = data.client?.plan || '-';
+        document.querySelector('#used').textContent = data.quota?.used ?? '-';
+        document.querySelector('#remaining').textContent = data.quota?.remaining ?? '-';
+        document.querySelector('#clientStatus').textContent = data.client?.status || data.status || '-';
+
+        rows.innerHTML = '';
+        for (const row of data.usage?.byRoute || []) {
+          const tr = document.createElement('tr');
+          tr.innerHTML = `
+            <td>${row.route || '-'}</td>
+            <td>${row.requests ?? 0}</td>
+            <td>${row.cache_hits ?? 0}</td>
+            <td>${row.db_hits ?? 0}</td>
+            <td>${row.avg_response_time_ms ?? '-'}</td>
+          `;
+          rows.appendChild(tr);
+        }
+      }
+    </script>
+  </body>
+</html>

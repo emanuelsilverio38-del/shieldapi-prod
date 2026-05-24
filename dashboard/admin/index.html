@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ShieldAPI Admin Dashboard</title>
+    <link rel="stylesheet" href="../shared/styles.css" />
+  </head>
+  <body>
+    <header>
+      <h1>ShieldAPI Admin</h1>
+      <div class="toolbar">
+        <input id="apiBase" aria-label="API base URL" />
+        <button id="saveBase">Save</button>
+      </div>
+    </header>
+    <main>
+      <div class="grid">
+        <section class="panel span-12">
+          <h2>Admin Access</h2>
+          <div class="form-grid">
+            <input id="adminKey" aria-label="Admin API key" placeholder="Admin API key" />
+            <div class="toolbar">
+              <button id="saveKey" class="primary">Save Key</button>
+              <button id="loadClients">Load Clients</button>
+              <button id="loadUsage">Load Usage</button>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel span-5">
+          <h2>Create Client</h2>
+          <div class="form-grid">
+            <input id="clientName" placeholder="Name" />
+            <input id="clientEmail" placeholder="Email" />
+            <select id="clientPlan">
+              <option value="free">Free</option>
+              <option value="starter">Starter</option>
+              <option value="pro">Pro</option>
+              <option value="advanced">Advanced</option>
+              <option value="enterprise">Enterprise</option>
+            </select>
+            <button id="createClient" class="primary">Create</button>
+          </div>
+        </section>
+
+        <section class="panel span-7">
+          <h2>Output</h2>
+          <pre id="output">{}</pre>
+        </section>
+
+        <section class="panel span-12">
+          <h2>Clients</h2>
+          <table>
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>Email</th>
+                <th>Plan</th>
+                <th>Status</th>
+                <th>Billing</th>
+                <th>Action</th>
+              </tr>
+            </thead>
+            <tbody id="clientRows"></tbody>
+          </table>
+        </section>
+      </div>
+    </main>
+    <script type="module">
+      import { getApiBase, setApiBase, getApiKey, setApiKey, shieldFetch } from '../shared/api.js';
+
+      const apiBase = document.querySelector('#apiBase');
+      const adminKey = document.querySelector('#adminKey');
+      const output = document.querySelector('#output');
+      const clientRows = document.querySelector('#clientRows');
+      const adminStorageKey = 'shieldapi_admin_key';
+
+      apiBase.value = getApiBase();
+      adminKey.value = getApiKey(adminStorageKey);
+
+      document.querySelector('#saveBase').addEventListener('click', () => setApiBase(apiBase.value));
+      document.querySelector('#saveKey').addEventListener('click', () => setApiKey(adminKey.value, adminStorageKey));
+      document.querySelector('#loadClients').addEventListener('click', loadClients);
+      document.querySelector('#loadUsage').addEventListener('click', async () => {
+        const result = await shieldFetch('/admin/clients/usage', { apiKey: adminKey.value });
+        output.textContent = JSON.stringify(result.data, null, 2);
+      });
+
+      document.querySelector('#createClient').addEventListener('click', async () => {
+        const result = await shieldFetch('/admin/clients/create', {
+          method: 'POST',
+          apiKey: adminKey.value,
+          body: {
+            name: document.querySelector('#clientName').value,
+            email: document.querySelector('#clientEmail').value,
+            plan: document.querySelector('#clientPlan').value,
+          },
+        });
+
+        output.textContent = JSON.stringify(result.data, null, 2);
+        if (result.ok) await loadClients();
+      });
+
+      async function loadClients() {
+        const result = await shieldFetch('/admin/clients', { apiKey: adminKey.value });
+        output.textContent = JSON.stringify(result.data, null, 2);
+        clientRows.innerHTML = '';
+
+        for (const client of result.data?.clients || []) {
+          const tr = document.createElement('tr');
+          const statusClass = client.status === 'active' ? 'ok' : 'blocked';
+          tr.innerHTML = `
+            <td>${client.name || '-'}</td>
+            <td>${client.email || '-'}</td>
+            <td>${client.plan || '-'}</td>
+            <td><span class="status ${statusClass}">${client.status || '-'}</span></td>
+            <td>${client.billing_status || client.billingStatus || '-'}</td>
+            <td><button class="danger" data-id="${client.id}">Disable</button></td>
+          `;
+          clientRows.appendChild(tr);
+        }
+
+        for (const button of clientRows.querySelectorAll('button[data-id]')) {
+          button.addEventListener('click', async () => {
+            const result = await shieldFetch('/admin/clients/disable', {
+              method: 'POST',
+              apiKey: adminKey.value,
+              body: { clientId: button.dataset.id },
+            });
+            output.textContent = JSON.stringify(result.data, null, 2);
+            if (result.ok) await loadClients();
+          });
+        }
+      }
+    </script>
+  </body>
+</html>
