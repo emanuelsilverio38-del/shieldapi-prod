@@ -16,6 +16,7 @@ import {
   getClientUsageSummary,
   recordUsageEvent,
 } from '../db/usageRepository.js';
+import { saveTokenAnalysisHistory } from '../db/tokenHistoryRepository.js';
 import { validateAnalyzeInput } from '../validators/analyzeValidator.js';
 
 function getTokenAddressFromUrl(req) {
@@ -94,6 +95,12 @@ async function recordRouteUsage(context, auth, route, statusCode, responseTimeMs
       mode: payload.mode || null,
     },
   }).catch(() => {});
+}
+
+async function recordAnalysisHistory(context, input, analysis) {
+  if (!context.pool || !context.dbReady || !analysis) return;
+
+  await saveTokenAnalysisHistory(context.pool, input, analysis).catch(() => {});
 }
 
 function sendAuthFailure(res, failure, timer) {
@@ -202,6 +209,7 @@ export async function handleAnalyze(req, res, context = {}) {
       pool: context.pool || context.dbPool || null,
       ready: context.dbReady,
     });
+    await recordAnalysisHistory(context, validation.input, analysis);
 
     const payload = {
       ...analysis,
@@ -349,6 +357,7 @@ export async function handleSubmit(req, res, context = {}) {
       pool: context.pool || context.dbPool || null,
       ready: context.dbReady,
     });
+    await recordAnalysisHistory(context, validation.input, analysis);
 
     const payload = {
       service: context.serviceName || 'ShieldAPI',

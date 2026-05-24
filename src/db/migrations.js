@@ -33,6 +33,40 @@ export async function initDatabase() {
     `);
 
     await dbPool.query(`
+      CREATE TABLE IF NOT EXISTS token_analysis_history (
+        id BIGSERIAL PRIMARY KEY,
+        token_key TEXT NOT NULL,
+        token_address TEXT,
+        token_symbol TEXT,
+        chain TEXT,
+        status TEXT,
+        risk_level TEXT,
+        risk_score NUMERIC,
+        security_score NUMERIC,
+        opportunity_score NUMERIC,
+        liquidity_usd NUMERIC,
+        volume24h NUMERIC,
+        holder_concentration NUMERIC,
+        blocking_reasons JSONB,
+        warnings JSONB,
+        reasons JSONB,
+        payload JSONB NOT NULL,
+        analyzed_at TIMESTAMPTZ,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `);
+
+    await dbPool.query(`
+      CREATE INDEX IF NOT EXISTS idx_token_analysis_history_token_created
+      ON token_analysis_history(token_key, created_at DESC)
+    `);
+
+    await dbPool.query(`
+      CREATE INDEX IF NOT EXISTS idx_token_analysis_history_status_created
+      ON token_analysis_history(status, created_at DESC)
+    `);
+
+    await dbPool.query(`
       CREATE TABLE IF NOT EXISTS api_clients (
         id UUID PRIMARY KEY,
         name TEXT NOT NULL,
