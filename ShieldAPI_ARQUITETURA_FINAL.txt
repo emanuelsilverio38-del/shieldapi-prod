@@ -1,0 +1,494 @@
+ShieldAPI - Arquitetura Final Profissional
+
+1. Objetivo
+
+A ShieldAPI e uma API profissional para Solana focada em seguranca, inteligencia e decisao antes de qualquer bot, agente IA, screener ou aplicacao interagir com um token.
+
+Decisao central:
+
+- APPROVED
+- WARNING
+- BLOCKED
+
+Com:
+
+- riskScore
+- securityScore
+- opportunityScore
+- reasons
+- warnings
+- blockingReasons
+- dados de mercado
+- checks de seguranca
+- futuramente quote/swap seguro sem guardar private keys
+
+Posicionamento:
+
+Security and intelligence API for Solana AI agents, trading bots and token scanners.
+
+Frase comercial:
+
+Antes do teu bot, agente ou scanner interagir com um token Solana, chama a ShieldAPI.
+
+Promessa correta:
+
+Reduce bad-token exposure before your bot, agent or app interacts with a Solana token.
+
+2. Arquitetura Alvo
+
+ShieldAPI/
+  server.js
+  package.json
+  package-lock.json
+  README.md
+  .env.example
+  src/
+    config/
+    db/
+    cache/
+    auth/
+    billing/
+    routes/
+    security/
+    scanner/
+    execution/
+    validators/
+    policies/
+    observability/
+    utils/
+  dashboard/
+    client/
+    admin/
+  docs/
+    examples/
+  tests/
+
+3. Responsabilidade do server.js
+
+O server.js deve ser apenas bootstrap/entrada da aplicacao.
+
+Deve fazer:
+
+- carregar env/config
+- criar servidor HTTP
+- inicializar DB
+- criar routeContext
+- chamar handleRoute()
+- tratar OPTIONS/CORS
+- tratar fallback 404
+- tratar SIGTERM
+- iniciar server.listen
+
+Nao deve conter no estado final:
+
+- SQL grande
+- Stripe grande
+- Dexscreener logic grande
+- risk engine
+- scoring
+- admin logic pesada
+- billing webhook completo
+- auth pesado
+- cache logic grande
+- scanner logic
+- execution logic
+
+4. src/config
+
+Centraliza variaveis de ambiente e configuracao:
+
+- PORT
+- NODE_ENV
+- SERVICE_NAME
+- VERSION
+- DATABASE_URL
+- STRIPE_SECRET_KEY
+- STRIPE_WEBHOOK_SECRET
+- APP_URL
+- DASHBOARD_SUCCESS_URL
+- DASHBOARD_CANCEL_URL
+- ADMIN_API_KEY
+- API_KEY legacy
+- flags de modulos
+- timeouts externos
+
+5. src/db
+
+Responsavel por PostgreSQL:
+
+- pool.js
+- migrations.js
+- clientsRepository.js
+- usageRepository.js
+- tokenCacheRepository.js
+- billingRepository.js
+- tokenHistoryRepository.js
+- scannerRepository.js
+
+Regra:
+
+Nenhuma rota deve escrever SQL grande diretamente.
+
+6. src/cache
+
+Responsavel por cache rapido e politicas de cache:
+
+- tokenMemoryCache.js
+- cacheKeys.js
+- cachePolicy.js
+
+Objetivo:
+
+Reduzir custos, aumentar velocidade e manter respostas consistentes.
+
+7. src/auth
+
+Responsavel por autenticacao, API keys, rate limit, quota e admin auth:
+
+- apiKeys.js
+- rateLimit.js
+- quota.js
+- plans.js
+- adminAuth.js
+
+Regra:
+
+Toda rota critica deve passar por auth, quota e rate limit de forma consistente.
+
+8. src/billing
+
+Responsavel por Stripe, subscriptions, checkout, portal, webhook e entrega segura de API key:
+
+- stripeClient.js
+- checkout.js
+- portal.js
+- webhook.js
+- subscriptions.js
+- apiKeyDelivery.js
+
+Regra:
+
+Billing deve ser automatico, seguro e separado do server.js.
+
+9. src/routes
+
+Responsavel por handlers HTTP finos:
+
+- index.js
+- root.js
+- health.js
+- docs.js
+- analyze.js
+- admin.js
+- billing.js
+- scanner.js
+- execution.js
+
+Objetivo:
+
+Rotas devem orquestrar. A logica real deve estar em modulos.
+
+10. src/security
+
+Coracao da ShieldAPI v4.8 Security Module Pro:
+
+- rugcheckClient.js
+- tokenSafety.js
+- dexRiskEngine.js
+- solanaAuthorities.js
+- holdersAnalysis.js
+- liquidityRisk.js
+- creatorRisk.js
+- metadataRisk.js
+- blacklist.js
+- washTradingDetector.js
+- riskScoring.js
+
+Objetivo:
+
+Transformar a ShieldAPI de Dexscreener Risk API para Solana Security Intelligence API.
+
+11. src/scanner
+
+Responsavel por descobrir, analisar e rankear tokens:
+
+- discovery.js
+- ranking.js
+- scannerState.js
+- alerts.js
+- approvedTokens.js
+- blockedTokens.js
+
+Endpoints futuros:
+
+- /scan/run
+- /scan/latest
+- /scan/top
+- /scan/approved
+- /scan/blocked
+
+12. src/execution
+
+Modulo futuro e opcional para Jupiter/Jito:
+
+- jupiterQuote.js
+- jupiterPrepareSwap.js
+- jitoClient.js
+- swapSafety.js
+- transactionBuilder.js
+
+Modelo seguro:
+
+- ShieldAPI nao guarda private keys
+- ShieldAPI nao assina transacoes dos clientes
+- Cliente mantem controlo da wallet
+- ShieldAPI pode preparar quote ou transacao nao assinada
+- Cliente assina e executa na propria infraestrutura
+
+Endpoints futuros:
+
+- GET /quote
+- POST /prepare-swap
+
+13. src/validators
+
+Responsavel por validar inputs antes da logica:
+
+- solanaAddressValidator.js
+- requestValidator.js
+- billingValidator.js
+- analyzeValidator.js
+- quoteValidator.js
+- adminValidator.js
+
+14. src/policies
+
+Responsavel por regras de negocio e thresholds:
+
+- planPolicies.js
+- riskPolicies.js
+- billingPolicies.js
+- cachePolicies.js
+- scoringPolicies.js
+- executionPolicies.js
+
+15. src/observability
+
+Responsavel por logs, metricas, erros, latencia, monitorizacao externa e audit log:
+
+- logger.js
+- metrics.js
+- errorReporter.js
+- latencyTracker.js
+- externalApiMonitor.js
+- auditLog.js
+
+16. src/utils
+
+Funcoes pequenas e genericas:
+
+- http.js
+- json.js
+- numbers.js
+- time.js
+- errors.js
+
+17. Dashboard
+
+Dashboard Cliente:
+
+- ver API key
+- copiar API key
+- regenerar API key
+- ver plano
+- ver usage/quota
+- abrir Stripe Billing Portal
+- ver docs rapidas
+- testar /analyze no browser
+
+Dashboard Admin:
+
+- listar clientes
+- ver clientes ativos/desativados
+- ver usage por cliente
+- mudar plano
+- desativar cliente
+- ver DB/cache/Stripe
+- ver falhas recentes
+- ver eventos billing
+- ver tokens analisados
+- ver scanner results
+
+18. Docs
+
+Documentacao publica/developer:
+
+- quickstart.md
+- authentication.md
+- analyze.md
+- billing.md
+- rate-limits.md
+- errors.md
+- examples/curl.md
+- examples/node.md
+- examples/python.md
+
+19. Tests
+
+Testes recomendados:
+
+- health.test.js
+- auth.test.js
+- billing.test.js
+- analyze.test.js
+- security.test.js
+- scanner.test.js
+
+20. routeContext
+
+Atual:
+
+const routeContext = {
+  pool: dbPool,
+  dbPool,
+  dbReady,
+  stripe,
+  version: VERSION,
+  startedAt,
+  responseTimeMs
+};
+
+Futuro:
+
+const routeContext = {
+  config,
+  db,
+  repositories,
+  cache,
+  auth,
+  billing,
+  security,
+  scanner,
+  execution,
+  logger,
+  metrics,
+  startedAt,
+  responseTimeMs
+};
+
+Objetivo:
+
+Permitir migrar rotas criticas sem depender de variaveis soltas dentro do server.js.
+
+21. Resposta Profissional Ideal de /analyze
+
+{
+  "status": "APPROVED",
+  "riskLevel": "LOW",
+  "riskScore": 12,
+  "securityScore": 88,
+  "opportunityScore": 72,
+  "token": {
+    "address": "TOKEN_MINT",
+    "symbol": "ABC",
+    "name": "ABC Token",
+    "chain": "solana"
+  },
+  "market": {
+    "price": 0.0000123,
+    "liquidityUsd": 240000,
+    "volume24h": 850000,
+    "txns24h": 4300,
+    "dex": "raydium",
+    "pairAddress": "PAIR_ADDRESS"
+  },
+  "security": {
+    "rugcheck": {
+      "status": "OK",
+      "score": 12
+    },
+    "authorities": {
+      "mintAuthority": false,
+      "freezeAuthority": false
+    },
+    "holders": {
+      "top10Pct": 21.4,
+      "holderCount": 1840,
+      "risk": "LOW"
+    },
+    "liquidity": {
+      "risk": "LOW",
+      "lockedOrBurned": true
+    },
+    "creator": {
+      "risk": "LOW",
+      "previousSuspiciousTokens": 0
+    },
+    "metadata": {
+      "risk": "LOW"
+    }
+  },
+  "reasons": [
+    "Healthy liquidity",
+    "No freeze authority",
+    "Holder concentration acceptable"
+  ],
+  "warnings": [],
+  "blockingReasons": [],
+  "responseTimeMs": 184
+}
+
+22. Status Codes
+
+- 200 OK
+- 400 BAD_REQUEST
+- 401 UNAUTHORIZED
+- 403 FORBIDDEN
+- 404 NOT_FOUND
+- 429 TOO_MANY_REQUESTS
+- 500 INTERNAL_ERROR
+- 502 BAD_GATEWAY
+- 503 SERVICE_UNAVAILABLE
+
+23. Regras Obrigatorias de Seguranca
+
+- Nunca guardar private keys dos clientes
+- Nunca imprimir API keys completas nos logs
+- Usar hash SHA-256 das API keys
+- Proteger endpoints admin com admin key
+- Validar Stripe webhook signature
+- Nao confiar em dados enviados pelo cliente
+- Validar enderecos Solana
+- Aplicar rate limit
+- Aplicar quota
+- Ter timeouts em APIs externas
+- Ter fallback quando Dexscreener/RugCheck falham
+- Nao prometer lucro
+- Nao apresentar como aconselhamento financeiro
+
+24. Prioridade de Desenvolvimento
+
+1. Fechar modularizacao base
+2. Migrar rotas criticas com routeContext correto
+3. Criar validators
+4. Criar policies
+5. Criar observability/logger
+6. Corrigir health/version/environment/dbReady
+7. Criar Security Module Pro v4.8
+8. Melhorar /analyze e /analyze-fast
+9. Integrar RugCheck/on-chain checks
+10. Criar Scanner Module Pro
+11. Criar Dashboard Cliente/Admin
+12. Criar Execution Module com /quote e /prepare-swap
+
+25. Conclusao
+
+A base SaaS ja esta forte. A modularizacao ja comecou. O dispatcher ja funciona. O routeContext prepara a migracao. As rotas publicas simples ja foram migradas.
+
+A prioridade absoluta e construir um /analyze profissional, confiavel e mais util do que dados crus do Dexscreener.
+
+A ShieldAPI fica realmente forte quando responder com confianca:
+
+APPROVED / WARNING / BLOCKED
+
+e explicar claramente o porque.

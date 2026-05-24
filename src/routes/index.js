@@ -39,7 +39,7 @@ export async function handleRoute(req, res, context = {}) {
     return handleDocs(req, res, context);
   }
 
-  if (req.method === 'POST' && pathname === '/billing/create-checkout-session') {
+  if ((req.method === 'POST' || req.method === 'GET') && pathname === '/billing/create-checkout-session') {
     return handleCreateCheckoutSession(req, res, context);
   }
 

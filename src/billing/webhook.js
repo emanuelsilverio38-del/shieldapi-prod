@@ -8,6 +8,7 @@ import {
   findClientByStripeSubscriptionId,
   updateClientBilling,
 } from '../db/clientsRepository.js';
+import { storeApiKeyDelivery } from './apiKeyDelivery.js';
 
 function unixToIso(value) {
   if (!value) return null;
@@ -150,6 +151,12 @@ export async function handleCheckoutSessionCompleted(pool, session) {
       currentPeriodEnd,
     });
   }
+
+  await storeApiKeyDelivery(pool, {
+    sessionId: session.id,
+    clientId: client.id,
+    apiKey,
+  });
 
   return {
     action: 'created_new_client',

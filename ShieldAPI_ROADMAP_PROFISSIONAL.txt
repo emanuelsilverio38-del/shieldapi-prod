@@ -1,0 +1,259 @@
+ShieldAPI - Roadmap Profissional
+
+Objetivo final:
+
+Criar uma API SaaS para seguranca, decisao e inteligencia de tokens Solana, usada por agentes IA, bots de trading, screeners, dashboards Web3, ferramentas de developers e sistemas de monitorizacao.
+
+Posicionamento:
+
+Security and intelligence API for Solana AI agents, trading bots and token scanners.
+
+Promessa correta:
+
+Reduce bad-token exposure before your bot, agent or app interacts with a Solana token.
+
+Regra comercial:
+
+Nao vender como promessa de lucro. Vender como camada de protecao e decisao antes de bots, agentes ou apps interagirem com tokens Solana.
+
+Estado atual:
+
+- API Node.js online no Railway
+- PostgreSQL Railway ligado
+- Stripe Checkout em modo teste
+- Stripe Webhook funcional
+- API keys por cliente
+- Planos, quotas e rate limit
+- Usage por cliente
+- Admin endpoints
+- Cache em memoria e PostgreSQL
+- Analise inicial Dexscreener
+- /analyze e /analyze-fast funcionais em versao inicial
+- Dispatcher modular iniciado
+- routeContext criado no server.js
+- Rotas publicas simples migradas
+- 404 profissional implementado
+
+Rotas ja migradas:
+
+- GET /
+- GET /health
+- GET /docs
+- GET /cache/stats
+- GET /billing/cancel
+
+Rotas criticas ainda no server.js:
+
+- /usage
+- /admin/*
+- /billing/create-checkout-session
+- /billing/portal
+- /billing/success
+- /webhooks/stripe
+- /analyze
+- /analyze-fast
+- /submit
+
+Regra operacional:
+
+Nao usar git add .
+
+Usar git add especifico para evitar incluir ficheiros antigos ou pendencias fora da fase atual.
+
+Fase 1 - Fechar checkpoint e backup atual
+
+- Confirmar git status
+- Confirmar Railway funcional
+- Confirmar rotas publicas
+- Criar backup do server.js se necessario
+- Guardar checkpoint, arquitetura final e roadmap
+- Nao alterar rotas criticas sem plano
+
+Fase 2 - Criar base profissional de validators
+
+- Criar src/validators
+- Criar solanaAddressValidator.js
+- Criar requestValidator.js
+- Criar billingValidator.js
+- Criar analyzeValidator.js
+- Criar quoteValidator.js
+- Criar adminValidator.js
+- Exportar funcoes puras
+- Testar imports
+
+Fase 3 - Criar policies centralizadas
+
+- Criar src/policies
+- Criar planPolicies.js
+- Criar riskPolicies.js
+- Criar billingPolicies.js
+- Criar cachePolicies.js
+- Criar scoringPolicies.js
+- Criar executionPolicies.js
+- Centralizar thresholds e defaults
+
+Fase 4 - Criar observability/logger basico
+
+- Criar src/observability
+- Criar logger.js
+- Criar metrics.js
+- Criar errorReporter.js
+- Criar latencyTracker.js
+- Criar externalApiMonitor.js
+- Criar auditLog.js
+- Garantir mascaramento de API keys e secrets
+
+Fase 5 - Corrigir health/version/environment/dbReady
+
+- Centralizar version
+- Garantir NODE_ENV correto
+- Corrigir DB status em /health
+- Mostrar Stripe/webhook/cache/modularRoutes de forma coerente
+- Nao expor segredos
+
+Fase 6 - Migrar /usage com auth/context correto
+
+- Comparar handler legacy e modular
+- Confirmar API key, DB, quota e usage
+- Testar key valida, invalida, ausente e disabled
+- Testar producao
+
+Fase 7 - Migrar /admin/* com adminAuth correto
+
+- Criar/confirmar adminAuth
+- Validar payloads admin
+- Adicionar audit logs
+- Garantir que admin endpoints nunca ficam publicos
+
+Fase 8 - Migrar billing critico
+
+- Migrar checkout
+- Migrar portal
+- Migrar success preservando entrega one-time de API key
+- Migrar webhook mantendo raw body e stripe-signature
+- Garantir idempotencia
+
+Fase 9 - Migrar /analyze, /analyze-fast e /submit
+
+- Manter compatibilidade de resposta atual
+- Preservar cache memoria e DB
+- Preservar auth, quota, rate limit e usage
+- Preparar Security Module Pro
+
+Fase 10 - Limpar server.js
+
+- Deixar server.js apenas como bootstrap/router principal
+- Remover SQL grande, Stripe handlers, analyze logic, admin logic e auth pesado
+
+Fase 11 - Criar ShieldAPI v4.8 Security Module Pro
+
+- RugCheck ou equivalente
+- Mint authority
+- Freeze authority
+- Holders concentration
+- Creator risk
+- Liquidity risk real
+- Metadata checks
+- Blacklist
+- Wash trading provavel
+- Historico de risco
+- APPROVED/WARNING/BLOCKED confiavel
+
+Fase 12 - Melhorar scoring e resposta /analyze
+
+- Separar riskScore, securityScore e opportunityScore
+- Criar blockingReasons, warnings e reasons
+- Guardar scoringVersion
+- Evitar linguagem de promessa de lucro
+
+Fase 13 - Token history e risk memory
+
+- Criar tokenHistoryRepository
+- Guardar firstSeen/lastSeen
+- Guardar evolucao de risco, liquidez e volume
+- Permitir comparar estado atual com passado
+
+Fase 14 - Scanner Module Pro
+
+- Rever ScannerAgent.js
+- Migrar para src/scanner
+- Criar discovery, ranking, scannerState, alerts, approvedTokens e blockedTokens
+- Criar scannerRepository
+
+Fase 15 - Dashboard Cliente/Admin
+
+- Cliente ve API key, plano, quota, usage e billing portal
+- Admin lista clientes, altera plano, desativa, ve falhas e eventos
+
+Fase 16 - Documentacao publica e exemplos
+
+- quickstart.md
+- authentication.md
+- analyze.md
+- billing.md
+- rate-limits.md
+- errors.md
+- examples/curl.md
+- examples/node.md
+- examples/python.md
+
+Fase 17 - Testes automatizados minimos
+
+- health.test.js
+- auth.test.js
+- billing.test.js
+- analyze.test.js
+- security.test.js
+- scanner.test.js
+
+Fase 18 - Hardening de producao
+
+- CORS mais controlado
+- Timeouts, retries e backoff
+- Logs seguros
+- Error handling global
+- Graceful shutdown
+- Alertas DB/Stripe/webhook
+- Uptime monitoring
+
+Fase 19 - Execution Module seguro
+
+- GET /quote
+- POST /prepare-swap
+- Nunca guardar private keys
+- Nunca assinar transacoes
+- BLOCKED nunca prepara swap
+
+Fase 20 - Go-to-market
+
+- Landing page simples
+- Docs publicas
+- Pricing claro
+- Free tier
+- Beta users
+- Exemplos de integracao
+- Posts tecnicos
+- Contactar builders de bots/screeners
+
+Prioridade absoluta:
+
+ShieldAPI v4.8 Security Module Pro.
+
+Definicao de API pronta para vender:
+
+- API online estavel
+- API keys e planos funcionais
+- Stripe billing confiavel
+- Dashboard basico
+- Docs publicas
+- /analyze profissional
+- Security Module Pro
+- APPROVED/WARNING/BLOCKED confiavel
+- reasons/warnings/blockingReasons claros
+- Cache e historico
+- Usage e quota corretos
+- Logs/observability
+- Health check correto
+- Testes minimos
+- Exemplos curl/Node/Python
+- Suporte a primeiros beta users

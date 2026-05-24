@@ -44,7 +44,9 @@ export async function initDatabase() {
         stripe_customer_id TEXT,
         stripe_subscription_id TEXT,
         stripe_price_id TEXT,
+        current_period_start TIMESTAMPTZ,
         current_period_end TIMESTAMPTZ,
+        metadata JSONB,
         created_at TIMESTAMPTZ DEFAULT NOW(),
         updated_at TIMESTAMPTZ DEFAULT NOW(),
         last_used_at TIMESTAMPTZ,
@@ -57,7 +59,9 @@ export async function initDatabase() {
     await dbPool.query(`ALTER TABLE api_clients ADD COLUMN IF NOT EXISTS stripe_customer_id TEXT`);
     await dbPool.query(`ALTER TABLE api_clients ADD COLUMN IF NOT EXISTS stripe_subscription_id TEXT`);
     await dbPool.query(`ALTER TABLE api_clients ADD COLUMN IF NOT EXISTS stripe_price_id TEXT`);
+    await dbPool.query(`ALTER TABLE api_clients ADD COLUMN IF NOT EXISTS current_period_start TIMESTAMPTZ`);
     await dbPool.query(`ALTER TABLE api_clients ADD COLUMN IF NOT EXISTS current_period_end TIMESTAMPTZ`);
+    await dbPool.query(`ALTER TABLE api_clients ADD COLUMN IF NOT EXISTS metadata JSONB`);
 
     await dbPool.query(`
       CREATE INDEX IF NOT EXISTS idx_api_clients_status
@@ -103,12 +107,27 @@ export async function initDatabase() {
         client_name TEXT,
         plan TEXT,
         route TEXT NOT NULL,
+        method TEXT,
         status_code INTEGER,
         response_time_ms NUMERIC,
+        token_address TEXT,
+        cache_hit BOOLEAN DEFAULT false,
+        db_hit BOOLEAN DEFAULT false,
+        ip TEXT,
+        user_agent TEXT,
         created_at TIMESTAMPTZ DEFAULT NOW(),
         metadata JSONB
       )
     `);
+
+    await dbPool.query(`ALTER TABLE api_usage_events ADD COLUMN IF NOT EXISTS client_name TEXT`);
+    await dbPool.query(`ALTER TABLE api_usage_events ADD COLUMN IF NOT EXISTS plan TEXT`);
+    await dbPool.query(`ALTER TABLE api_usage_events ADD COLUMN IF NOT EXISTS method TEXT`);
+    await dbPool.query(`ALTER TABLE api_usage_events ADD COLUMN IF NOT EXISTS token_address TEXT`);
+    await dbPool.query(`ALTER TABLE api_usage_events ADD COLUMN IF NOT EXISTS cache_hit BOOLEAN DEFAULT false`);
+    await dbPool.query(`ALTER TABLE api_usage_events ADD COLUMN IF NOT EXISTS db_hit BOOLEAN DEFAULT false`);
+    await dbPool.query(`ALTER TABLE api_usage_events ADD COLUMN IF NOT EXISTS ip TEXT`);
+    await dbPool.query(`ALTER TABLE api_usage_events ADD COLUMN IF NOT EXISTS user_agent TEXT`);
 
     await dbPool.query(`
       CREATE INDEX IF NOT EXISTS idx_api_usage_client_created

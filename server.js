@@ -1420,8 +1420,24 @@ const server = http.createServer(async (req, res) => {
     pool: dbPool,
     dbPool,
     dbReady,
+    dbLastError,
+    databaseEnabled: DATABASE_ENABLED,
     stripe,
+    stripeEnabled: STRIPE_ENABLED,
+    stripeWebhookConfigured: Boolean(STRIPE_WEBHOOK_SECRET),
+    appUrl: APP_URL,
+    serviceName: SERVICE_NAME,
     version: VERSION,
+    modularRoutesReady: getKnownRoutes().length,
+    usageStats,
+    rateLimitEnabled: RATE_LIMIT_ENABLED,
+    rateLimitWindowMs: RATE_LIMIT_WINDOW_MS,
+    cacheStats: {
+      items: tokenCache.size,
+      maxItems: CACHE_MAX_ITEMS,
+      ttlMs: CACHE_TTL_MS,
+      pendingAnalysis: pendingAnalysis.size
+    },
     startedAt,
     responseTimeMs
   };
@@ -1443,28 +1459,49 @@ const server = http.createServer(async (req, res) => {
     if (handled !== false) return;
   }
 
-  if (urlObj.pathname === '/billing/create-checkout-session') return handleBillingCreateCheckoutSession(req, res, urlObj);
-  if (urlObj.pathname === '/billing/portal') return handleBillingPortal(req, res, urlObj);
-  if (urlObj.pathname === '/billing/success') return handleBillingSuccess(req, res, urlObj);
+  if (
+    urlObj.pathname === '/billing/create-checkout-session' ||
+    urlObj.pathname === '/billing/portal' ||
+    urlObj.pathname === '/billing/success'
+  ) {
+    const handled = await handleRoute(req, res, routeContext);
+    if (handled !== false) return;
+  }
   if (urlObj.pathname === '/billing/cancel') {
     const handled = await handleRoute(req, res, routeContext);
     if (handled !== false) return;
   }
 
-  if (urlObj.pathname === '/webhooks/stripe') return handleStripeWebhook(req, res);
-  if (urlObj.pathname === '/analyze') return handleAnalyze(req, res, urlObj);
-  if (urlObj.pathname === '/analyze-fast') return handleAnalyzeFast(req, res, urlObj);
-  if (urlObj.pathname === '/submit') return handleSubmit(req, res, urlObj);
+  if (urlObj.pathname === '/webhooks/stripe') {
+    const handled = await handleRoute(req, res, routeContext);
+    if (handled !== false) return;
+  }
+  if (
+    urlObj.pathname === '/analyze' ||
+    urlObj.pathname === '/analyze-fast' ||
+    urlObj.pathname === '/submit'
+  ) {
+    const handled = await handleRoute(req, res, routeContext);
+    if (handled !== false) return;
+  }
   if (urlObj.pathname === '/cache/stats') {
     const handled = await handleRoute(req, res, routeContext);
     if (handled !== false) return;
   }
 
-  if (urlObj.pathname === '/usage') return handleUsage(req, res, urlObj);
-  if (urlObj.pathname === '/admin/clients/create') return handleAdminCreateClient(req, res, urlObj);
-  if (urlObj.pathname === '/admin/clients') return handleAdminListClients(req, res, urlObj);
-  if (urlObj.pathname === '/admin/clients/disable') return handleAdminDisableClient(req, res, urlObj);
-  if (urlObj.pathname === '/admin/clients/usage') return handleAdminClientUsage(req, res, urlObj);
+  if (urlObj.pathname === '/usage') {
+    const handled = await handleRoute(req, res, routeContext);
+    if (handled !== false) return;
+  }
+  if (
+    urlObj.pathname === '/admin/clients/create' ||
+    urlObj.pathname === '/admin/clients' ||
+    urlObj.pathname === '/admin/clients/disable' ||
+    urlObj.pathname === '/admin/clients/usage'
+  ) {
+    const handled = await handleRoute(req, res, routeContext);
+    if (handled !== false) return;
+  }
 
   return sendJson(res, 404, {
     status: 'NOT_FOUND',

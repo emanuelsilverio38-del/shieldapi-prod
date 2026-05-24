@@ -33,7 +33,11 @@ export function checkRateLimit({ client = null, req = null, plan = null } = {}) 
   const effectivePlan = plan || client?.plan || 'free';
   const planConfig = getPlanConfig(effectivePlan);
 
-  const limitPerMinute = Number(planConfig?.rateLimitPerMinute || 30);
+  const limitPerMinute = Number(
+    planConfig?.rateLimitPerMinute ??
+    planConfig?.perMinute ??
+    30
+  );
   const windowMs = 60 * 1000;
 
   const key = getClientRateKey(client, req);

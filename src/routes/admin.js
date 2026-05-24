@@ -1,5 +1,11 @@
 import { readRequestBody, sendJson } from '../utils/http.js';
 import { generateClientApiKey } from '../auth/apiKeys.js';
+import { requireAdminAuth } from '../auth/adminAuth.js';
+import {
+  validateCreateClientRequest,
+  validateDisableClientRequest,
+} from '../validators/adminValidator.js';
+import { recordAuditEvent } from '../observability/auditLog.js';
 import {
   createClient,
   disableClient,
@@ -11,61 +17,61 @@ import {
   getRecentUsageEvents,
 } from '../db/usageRepository.js';
 
-function requireAdmin(context = {}) {
-  const client = context.client || null;
-
-  if (!client) {
+function requireDatabase(context = {}) {
+  if (!context.pool || context.dbReady === false) {
     return {
       ok: false,
-      statusCode: 401,
-      error: 'authentication_required',
-      message: 'Admin authentication is required.',
+      statusCode: 503,
+      error: 'database_not_ready',
+      message: 'Database is not ready.',
     };
   }
 
-  const plan = String(client.plan || '').toLowerCase();
-  const isAdmin =
-    plan === 'master' ||
-    client.is_admin === true ||
-    client.role === 'admin';
-
-  if (!isAdmin) {
-    return {
-      ok: false,
-      statusCode: 403,
-      error: 'admin_required',
-      message: 'This endpoint requires admin access.',
-    };
-  }
-
-  return {
-    ok: true,
-    client,
-  };
+  return { ok: true };
 }
 
 export async function handleAdminCreateClient(req, res, context = {}) {
-  const auth = requireAdmin(context);
+  const auth = await requireAdminAuth(req, context);
 
   if (!auth.ok) {
     return sendJson(res, auth.statusCode, auth);
   }
 
+  const database = requireDatabase(context);
+  if (!database.ok) return sendJson(res, database.statusCode, database);
+
   try {
     const body = await readRequestBody(req);
+    const validation = validateCreateClientRequest(body);
+
+    if (!validation.ok) {
+      return sendJson(res, 400, validation);
+    }
+
     const apiKey = body.apiKey || generateClientApiKey();
 
     const client = await createClient(context.pool, {
-      name: body.name,
-      email: body.email || null,
+      name: validation.name,
+      email: validation.email,
       apiKey,
-      plan: body.plan || 'free',
+      plan: validation.plan,
       billingStatus: body.billingStatus || 'manual',
-      status: body.status || 'active',
+      status: validation.status,
       metadata: {
         createdBy: 'admin_route',
-        adminClientId: auth.client.id,
+        adminActorId: auth.actorId,
         ...(body.metadata || {}),
+      },
+    });
+
+    await recordAuditEvent({
+      action: 'admin_client_created',
+      actorId: auth.actorId,
+      targetId: client.id,
+      route: '/admin/clients/create',
+      metadata: {
+        plan: client.plan,
+        status: client.status,
       },
     });
 
@@ -85,11 +91,14 @@ export async function handleAdminCreateClient(req, res, context = {}) {
 }
 
 export async function handleAdminListClients(req, res, context = {}) {
-  const auth = requireAdmin(context);
+  const auth = await requireAdminAuth(req, context);
 
   if (!auth.ok) {
     return sendJson(res, auth.statusCode, auth);
   }
+
+  const database = requireDatabase(context);
+  if (!database.ok) return sendJson(res, database.statusCode, database);
 
   try {
     const clients = await listClients(context.pool, {
@@ -112,25 +121,29 @@ export async function handleAdminListClients(req, res, context = {}) {
 }
 
 export async function handleAdminDisableClient(req, res, context = {}) {
-  const auth = requireAdmin(context);
+  const auth = await requireAdminAuth(req, context);
 
   if (!auth.ok) {
     return sendJson(res, auth.statusCode, auth);
   }
 
+  const database = requireDatabase(context);
+  if (!database.ok) return sendJson(res, database.statusCode, database);
+
   try {
     const body = await readRequestBody(req);
-    const clientId = body.clientId || body.id;
+    const validation = validateDisableClientRequest(body);
 
-    if (!clientId) {
-      return sendJson(res, 400, {
-        ok: false,
-        error: 'missing_client_id',
-        message: 'clientId is required.',
-      });
-    }
+    if (!validation.ok) return sendJson(res, 400, validation);
 
-    const client = await disableClient(context.pool, clientId);
+    const client = await disableClient(context.pool, validation.clientId);
+
+    await recordAuditEvent({
+      action: 'admin_client_disabled',
+      actorId: auth.actorId,
+      targetId: validation.clientId,
+      route: '/admin/clients/disable',
+    });
 
     return sendJson(res, 200, {
       ok: true,
@@ -146,11 +159,14 @@ export async function handleAdminDisableClient(req, res, context = {}) {
 }
 
 export async function handleAdminUsage(req, res, context = {}) {
-  const auth = requireAdmin(context);
+  const auth = await requireAdminAuth(req, context);
 
   if (!auth.ok) {
     return sendJson(res, auth.statusCode, auth);
   }
+
+  const database = requireDatabase(context);
+  if (!database.ok) return sendJson(res, database.statusCode, database);
 
   try {
     const url = new URL(req.url, 'http://localhost');

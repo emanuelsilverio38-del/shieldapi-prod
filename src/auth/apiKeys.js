@@ -51,7 +51,7 @@ export function isBillingActive(client) {
     return true;
   }
 
-  return client.billing_status === 'active' || client.billing_status === 'trialing';
+  return ['active', 'trialing', 'manual'].includes(client.billing_status);
 }
 
 export function isClientPeriodValid(client) {
@@ -62,15 +62,18 @@ export function isClientPeriodValid(client) {
   return new Date(client.current_period_end).getTime() > Date.now();
 }
 
-export async function findClientByApiKey(apiKey) {
-  if (!dbPool || !dbReady || !apiKey) {
+export async function findClientByApiKey(apiKey, {
+  pool = dbPool,
+  ready = dbReady,
+} = {}) {
+  if (!pool || !ready || !apiKey) {
     return null;
   }
 
   const apiKeyHash = hashApiKey(apiKey);
 
   try {
-    const result = await dbPool.query(
+    const result = await pool.query(
       `
       SELECT
         id,
@@ -105,12 +108,15 @@ export async function findClientByApiKey(apiKey) {
   }
 }
 
-export async function disableClientById(clientId, billingStatus = 'disabled') {
-  if (!dbPool || !dbReady || !clientId) {
+export async function disableClientById(clientId, billingStatus = 'disabled', {
+  pool = dbPool,
+  ready = dbReady,
+} = {}) {
+  if (!pool || !ready || !clientId) {
     return false;
   }
 
-  await dbPool.query(
+  await pool.query(
     `
     UPDATE api_clients
     SET
@@ -129,6 +135,8 @@ export async function disableClientById(clientId, billingStatus = 'disabled') {
 export async function authenticateRequest(req, urlObj, options = {}) {
   const providedKey = getAuthKey(req, urlObj);
   const master = Boolean(env.API_KEY && providedKey === env.API_KEY);
+  const pool = options.pool || dbPool;
+  const ready = options.dbReady ?? options.ready ?? dbReady;
 
   if (master) {
     return {
@@ -152,7 +160,10 @@ export async function authenticateRequest(req, urlObj, options = {}) {
     };
   }
 
-  const client = await findClientByApiKey(providedKey);
+  const client = await findClientByApiKey(providedKey, {
+    pool,
+    ready,
+  });
 
   if (!client) {
     return {
@@ -179,7 +190,10 @@ export async function authenticateRequest(req, urlObj, options = {}) {
   }
 
   if (!isClientPeriodValid(client)) {
-    disableClientById(client.id, 'expired').catch(() => {});
+    disableClientById(client.id, 'expired', {
+      pool,
+      ready,
+    }).catch(() => {});
 
     return {
       ok: false,

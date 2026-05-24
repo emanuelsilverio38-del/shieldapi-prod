@@ -19,8 +19,11 @@ function getAnalyzedAtFromPayload(payload) {
   return new Date(parsed);
 }
 
-export async function saveAnalysisToDb(input, data) {
-  if (!dbPool || !dbReady || !input || !data) {
+export async function saveAnalysisToDb(input, data, {
+  pool = dbPool,
+  ready = dbReady,
+} = {}) {
+  if (!pool || !ready || !input || !data) {
     return false;
   }
 
@@ -31,7 +34,7 @@ export async function saveAnalysisToDb(input, data) {
   }
 
   try {
-    await dbPool.query(
+    await pool.query(
       `
       INSERT INTO token_analysis_cache (
         token_key,
@@ -80,8 +83,11 @@ export async function saveAnalysisToDb(input, data) {
   }
 }
 
-export async function getAnalysisFromDb(input) {
-  if (!dbPool || !dbReady || !input) {
+export async function getAnalysisFromDb(input, {
+  pool = dbPool,
+  ready = dbReady,
+} = {}) {
+  if (!pool || !ready || !input) {
     return null;
   }
 
@@ -92,7 +98,7 @@ export async function getAnalysisFromDb(input) {
   }
 
   try {
-    const result = await dbPool.query(
+    const result = await pool.query(
       `
       SELECT payload, analyzed_at, updated_at
       FROM token_analysis_cache
@@ -138,17 +144,17 @@ export async function getAnalysisFromDb(input) {
   }
 }
 
-export async function saveAnalysisEverywhere(input, data) {
+export async function saveAnalysisEverywhere(input, data, options = {}) {
   setCachedAnalysis(input, data);
-  await saveAnalysisToDb(input, data);
+  await saveAnalysisToDb(input, data, options);
 
   if (data?.tokenAddress && data.tokenAddress !== input) {
     setCachedAnalysis(data.tokenAddress, data);
-    await saveAnalysisToDb(data.tokenAddress, data);
+    await saveAnalysisToDb(data.tokenAddress, data, options);
   }
 
   if (data?.tokenSymbol && data.tokenSymbol !== input) {
     setCachedAnalysis(data.tokenSymbol, data);
-    await saveAnalysisToDb(data.tokenSymbol, data);
+    await saveAnalysisToDb(data.tokenSymbol, data, options);
   }
 }

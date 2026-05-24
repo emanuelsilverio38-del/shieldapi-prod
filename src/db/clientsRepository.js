@@ -1,3 +1,5 @@
+import crypto from 'crypto';
+
 import { hashApiKey } from '../auth/apiKeys.js';
 import { normalizePlan } from '../auth/plans.js';
 
@@ -26,10 +28,12 @@ export async function createClient(pool, {
 
   const normalizedPlan = normalizePlan(plan);
   const apiKeyHash = hashApiKey(apiKey);
+  const clientId = crypto.randomUUID();
 
   const result = await pool.query(
     `
     INSERT INTO api_clients (
+      id,
       name,
       email,
       api_key_hash,
@@ -42,10 +46,11 @@ export async function createClient(pool, {
       created_at,
       updated_at
     )
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,NOW(),NOW())
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,NOW(),NOW())
     RETURNING *
     `,
     [
+      clientId,
       name,
       email,
       apiKeyHash,

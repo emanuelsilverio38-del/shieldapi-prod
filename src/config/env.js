@@ -29,9 +29,10 @@ function booleanEnv(name, fallback = false) {
 
 export const env = {
   PORT: process.env.PORT || 3000,
+  NODE_ENV: process.env.NODE_ENV || 'development',
   API_KEY: cleanEnvValue(process.env.API_KEY),
 
-  VERSION: '4.8-dev',
+  VERSION: process.env.SHIELD_API_VERSION || '4.7',
   SERVICE_NAME: 'ShieldAPI',
 
   CACHE_TTL_MS: numberEnv('CACHE_TTL_MS', 60_000),
