@@ -38,6 +38,10 @@ export const env = {
   CACHE_TTL_MS: numberEnv('CACHE_TTL_MS', 60_000),
   CACHE_MAX_ITEMS: numberEnv('CACHE_MAX_ITEMS', 50_000),
   EXTERNAL_TIMEOUT_MS: numberEnv('EXTERNAL_TIMEOUT_MS', 3000),
+  RUGCHECK_ENABLED: booleanEnv('RUGCHECK_ENABLED', false),
+  ONCHAIN_SECURITY_ENABLED: booleanEnv('ONCHAIN_SECURITY_ENABLED', false),
+  HELIUS_API_KEY: cleanEnvValue(process.env.HELIUS_API_KEY),
+  SOLANA_RPC_URL: cleanEnvValue(process.env.SOLANA_RPC_URL),
 
   RATE_LIMIT_WINDOW_MS: numberEnv('RATE_LIMIT_WINDOW_MS', 60_000),
   RATE_LIMIT_ENABLED: String(process.env.RATE_LIMIT_ENABLED || 'true').toLowerCase() !== 'false',
